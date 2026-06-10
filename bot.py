@@ -1,5 +1,6 @@
 """Telegram-бот: отправка карточек тендеров и сбор обратной связи."""
 
+import html
 import json
 from datetime import datetime
 
@@ -63,15 +64,20 @@ def build_tender_message(tender: dict) -> str:
     if days is not None:
         deadline_str = f"{deadline_str} ({days} дн.)"
 
+    title = html.escape(str(tender.get("title") or ""))
+    customer = html.escape(str(tender.get("customer") or "не указан"))
+    category = html.escape(str(tender.get("category") or tender.get("matched_group") or "-"))
+    analysis = html.escape(str(tender.get("analysis") or ""))
+
     lines = [
-        f"{emoji} {verdict} · Оценка: {score}/10",
+        f"{emoji} <b>{verdict}</b> · Оценка: {score}/10",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"📋 {tender.get('title')}",
+        f"📋 {title}",
         "",
         f"💰 {_format_amount(tender.get('amount'))} BYN",
         f"📅 Подача до: {deadline_str}",
-        f"🏢 {tender.get('customer') or 'не указан'}",
-        f"🏗 {tender.get('category') or tender.get('matched_group') or '-'}",
+        f"🏢 {customer}",
+        f"🏗 {category}",
         f"📍 {tender.get('source')}",
     ]
 
@@ -82,9 +88,10 @@ def build_tender_message(tender: dict) -> str:
 
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("🤖 Анализ:")
-    lines.append(tender.get("analysis") or "")
+    lines.append(analysis)
     lines.append("")
-    lines.append(f"🔗 [Открыть тендер]({tender.get('url')})")
+    url = html.escape(str(tender.get("url") or ""), quote=True)
+    lines.append(f'🔗 <a href="{url}">Открыть тендер</a>')
 
     return "\n".join(lines)
 
@@ -133,7 +140,7 @@ async def send_top_tenders(bot):
             await bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
                 text=text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
                 disable_web_page_preview=True,
             )

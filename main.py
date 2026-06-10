@@ -18,7 +18,7 @@ from scraper_icetrade import scrape_icetrade
 log = get_logger("main")
 
 
-async def run_pipeline():
+async def run_pipeline(bot):
     """Полный цикл: скрапинг -> сохранение -> анализ -> отправка в Telegram."""
     log.info("=== Запуск пайплайна сбора тендеров ===")
 
@@ -45,8 +45,6 @@ async def run_pipeline():
         except Exception as e:
             log.error(f"Ошибка сохранения тендера {tender.get('id')}: {e}")
 
-    bot = get_bot()
-
     if not new_tenders:
         log.info("Новых релевантных тендеров не найдено")
         await notify(bot, "🔍 Новых релевантных тендеров не найдено.")
@@ -59,12 +57,20 @@ async def run_pipeline():
     log.info("=== Пайплайн завершён ===")
 
 
-def pipeline_thread():
+_pipeline_lock = threading.Lock()
+
+
+def pipeline_thread(bot):
     """Запускает run_pipeline() в новом event loop (для вызова из потока планировщика)."""
+    if not _pipeline_lock.acquire(blocking=False):
+        log.warning("Предыдущий запуск ещё не завершён — пропускаем")
+        return
     try:
-        asyncio.run(run_pipeline())
+        asyncio.run(run_pipeline(bot))
     except Exception as e:
         log.error(f"Ошибка выполнения пайплайна: {e}")
+    finally:
+        _pipeline_lock.release()
 
 
 def scheduler_loop():
@@ -81,16 +87,21 @@ def main():
     db.init_db()
     log.info("База данных инициализирована")
 
+    bot = get_bot()
+
     threading.Thread(target=run_dashboard, daemon=True).start()
     log.info("Дашборд запущен на http://localhost:5000")
 
-    threading.Thread(target=pipeline_thread, daemon=True).start()
+    threading.Thread(target=pipeline_thread, args=(bot,), daemon=True).start()
 
-    schedule.every().hour.do(lambda: threading.Thread(target=pipeline_thread, daemon=True).start())
+    schedule.every().hour.do(lambda: threading.Thread(target=pipeline_thread, args=(bot,), daemon=True).start())
     threading.Thread(target=scheduler_loop, daemon=True).start()
 
     run_bot()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        log.info("Бот остановлен пользователем")

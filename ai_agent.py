@@ -1,5 +1,6 @@
 """AI-агент для анализа тендеров через Claude API."""
 
+import os
 import re
 
 import httpx
@@ -11,7 +12,7 @@ from logger import get_logger
 log = get_logger("ai_agent")
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
 BASE_SYSTEM_PROMPT = """\
 Ты - эксперт по строительным тендерам Республики Беларусь, который помогает

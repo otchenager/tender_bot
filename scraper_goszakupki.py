@@ -5,6 +5,7 @@
 выводит сообщение и прекращает работу.
 """
 
+import random
 import re
 import time
 from datetime import datetime, timedelta
@@ -49,7 +50,7 @@ LABEL_MAP = {
 
 
 def _sleep():
-    time.sleep(REQUEST_DELAY[0] + (REQUEST_DELAY[1] - REQUEST_DELAY[0]) * 0.5)
+    time.sleep(random.uniform(*REQUEST_DELAY))
 
 
 def _get(url: str):
@@ -204,10 +205,18 @@ def _parse_card(url: str):
     soup = BeautifulSoup(resp.text, "html.parser")
     data = {"documents": []}
 
-    # Заголовок (первая попавшаяся панель)
-    title_tag = soup.select_one("div.panel.panel-primary div.panel-heading b")
-    if title_tag:
-        data["title"] = title_tag.get_text(strip=True)
+    # Заголовок страницы (используется только как fallback, если поле
+    # "название" не найдено в таблицах ниже)
+    h1_title = None
+    h1 = soup.select_one("h1")
+    if h1:
+        raw_h1 = h1.get_text(strip=True)
+        for prefix in ["Просмотр конкурса", "Просмотр заявки", "Просмотр запроса",
+                       "Просмотр электронного аукциона", "Просмотр процедуры закупки"]:
+            if raw_h1.startswith(prefix):
+                raw_h1 = raw_h1[len(prefix):].strip()
+                break
+        h1_title = raw_h1
 
     # Таблицы данных: th (метка) + td (значение)
     for table in soup.select("table.table-striped"):
@@ -272,6 +281,9 @@ def _parse_card(url: str):
         if amount_val is not None:
             data["amount"] = amount_val
 
+    if not data.get("title") and h1_title:
+        data["title"] = h1_title
+
     return data
 
 
@@ -323,6 +335,10 @@ def scrape_goszakupki(max_pages: int = 5) -> list:
             continue
 
         title = card.get("title") or row_info["title_hint"]
+        if not title or len(title.strip()) < 5:
+            log.warning(f"Пустой title для {tender_id}, пропускаем")
+            continue
+
         description = card.get("category", "")
 
         relevant, matched_group, priority = is_relevant(title, description)
