@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ tender.title }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding: 20px; }
+        .analysis-box { white-space: pre-wrap; background: #f8f9fa; padding: 15px; border-radius: 8px; }
+        .margin-positive { color: #198754; font-weight: 600; }
+        .margin-negative { color: #dc3545; font-weight: 600; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <a href="/" class="btn btn-outline-secondary btn-sm mb-3">&larr; Назад к ленте</a>
+
+    <h2>{{ tender.title }}</h2>
+    <p class="text-muted">
+        {{ tender.source }} ·
+        {% if tender.score is not none %}Оценка: {{ tender.score }}/10 · {{ tender.verdict }}{% endif %}
+    </p>
+
+    <table class="table table-sm">
+        <tbody>
+            <tr><th>Заказчик</th><td>{{ tender.customer or '-' }}</td></tr>
+            <tr><th>Адрес заказчика</th><td>{{ tender.customer_address or '-' }}</td></tr>
+            <tr><th>Сумма</th><td>{{ '%.2f'|format(tender.amount) if tender.amount is not none else '-' }} BYN</td></tr>
+            <tr><th>Срок подачи</th><td>{{ tender.deadline or '-' }}</td></tr>
+            <tr><th>Опубликован</th><td>{{ tender.posted_at or '-' }}</td></tr>
+            <tr><th>Категория</th><td>{{ tender.category or '-' }}</td></tr>
+            <tr><th>Группа / приоритет</th><td>{{ tender.matched_group or '-' }} / {{ tender.priority or '-' }}</td></tr>
+            <tr><th>Тип закупки</th><td>{{ tender.tender_type or '-' }}</td></tr>
+            <tr><th>ОКРБ</th><td>{{ tender.okrb_code or '-' }}</td></tr>
+            <tr><th>Финансирование</th><td>{{ tender.financing or '-' }}</td></tr>
+            <tr><th>Условия оплаты</th><td>{{ tender.payment_terms or '-' }}</td></tr>
+            <tr><th>Ссылка</th><td><a href="{{ tender.url }}" target="_blank">{{ tender.url }}</a></td></tr>
+        </tbody>
+    </table>
+
+    {% if tender.analysis %}
+    <h4>🤖 AI-анализ</h4>
+    <div class="analysis-box mb-3">{{ tender.analysis }}</div>
+    {% if tender.margin_byn is not none %}
+    <p>
+        Маржа:
+        {% if tender.margin_byn > 0 %}
+            <span class="margin-positive">+{{ tender.margin_byn }} BYN ({{ tender.margin_pct }}%)</span>
+        {% else %}
+            <span class="margin-negative">{{ tender.margin_byn }} BYN ({{ tender.margin_pct }}%)</span>
+        {% endif %}
+    </p>
+    {% endif %}
+    {% endif %}
+
+    {% if margin_result and margin_result.positions %}
+    <h4>Сметный анализ</h4>
+    <table class="table table-sm table-striped">
+        <thead>
+            <tr>
+                <th>Позиция</th>
+                <th>Ед.</th>
+                <th>Кол-во</th>
+                <th>Цена тендера</th>
+                <th>Моя цена</th>
+                <th>Разница</th>
+                <th>%</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in margin_result.positions %}
+            <tr>
+                <td>{{ p.name }}</td>
+                <td>{{ p.unit }}</td>
+                <td>{{ p.qty }}</td>
+                <td>{{ p.tender_price }}</td>
+                <td>{{ p.my_price }}</td>
+                <td class="{{ 'margin-positive' if p.diff_byn > 0 else 'margin-negative' }}">{{ p.diff_byn }}</td>
+                <td>{{ p.diff_pct if p.diff_pct is not none else '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p>Сопоставлено позиций: {{ margin_result.matched_count }} / {{ margin_result.total_count }}</p>
+    {% endif %}
+
+    <h4>Оценка тендера</h4>
+    <div class="btn-group" role="group">
+        <button class="btn btn-success" onclick="sendFeedback('👍')">👍 Интересно</button>
+        <button class="btn btn-warning" onclick="sendFeedback('🤷')">🤷 Может быть</button>
+        <button class="btn btn-danger" onclick="sendFeedback('👎')">👎 Не интересно</button>
+    </div>
+    <div id="feedback-result" class="mt-2 text-success"></div>
+</div>
+
+<script>
+function sendFeedback(reaction) {
+    fetch(window.location.pathname + '/feedback', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'reaction=' + encodeURIComponent(reaction)
+    }).then(() => {
+        document.getElementById('feedback-result').textContent = 'Спасибо за оценку: ' + reaction;
+    });
+}
+</script>
+</body>
+</html>
