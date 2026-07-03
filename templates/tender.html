@@ -1,109 +1,158 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ tender.title }}</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { padding: 20px; }
-        .analysis-box { white-space: pre-wrap; background: #f8f9fa; padding: 15px; border-radius: 8px; }
-        .margin-positive { color: #198754; font-weight: 600; }
-        .margin-negative { color: #dc3545; font-weight: 600; }
-    </style>
-</head>
-<body>
-<div class="container">
-    <a href="/" class="btn btn-outline-secondary btn-sm mb-3">&larr; Назад к ленте</a>
+{% extends "base.html" %}
+{% set active_tab = "tenders" %}
+{% block title %}{{ tender.title or 'Тендер' }}{% endblock %}
 
-    <h2>{{ tender.title }}</h2>
-    <p class="text-muted">
-        {{ tender.source }} ·
-        {% if tender.score is not none %}Оценка: {{ tender.score }}/10 · {{ tender.verdict }}{% endif %}
-    </p>
+{% block content %}
 
-    <table class="table table-sm">
-        <tbody>
-            <tr><th>Заказчик</th><td>{{ tender.customer or '-' }}</td></tr>
-            <tr><th>Адрес заказчика</th><td>{{ tender.customer_address or '-' }}</td></tr>
-            <tr><th>Сумма</th><td>{{ '%.2f'|format(tender.amount) if tender.amount is not none else '-' }} BYN</td></tr>
-            <tr><th>Срок подачи</th><td>{{ tender.deadline or '-' }}</td></tr>
-            <tr><th>Опубликован</th><td>{{ tender.posted_at or '-' }}</td></tr>
-            <tr><th>Категория</th><td>{{ tender.category or '-' }}</td></tr>
-            <tr><th>Группа / приоритет</th><td>{{ tender.matched_group or '-' }} / {{ tender.priority or '-' }}</td></tr>
-            <tr><th>Тип закупки</th><td>{{ tender.tender_type or '-' }}</td></tr>
-            <tr><th>ОКРБ</th><td>{{ tender.okrb_code or '-' }}</td></tr>
-            <tr><th>Финансирование</th><td>{{ tender.financing or '-' }}</td></tr>
-            <tr><th>Условия оплаты</th><td>{{ tender.payment_terms or '-' }}</td></tr>
-            <tr><th>Ссылка</th><td><a href="{{ tender.url }}" target="_blank">{{ tender.url }}</a></td></tr>
-        </tbody>
-    </table>
-
-    {% if tender.analysis %}
-    <h4>🤖 AI-анализ</h4>
-    <div class="analysis-box mb-3">{{ tender.analysis }}</div>
-    {% if tender.margin_byn is not none %}
-    <p>
-        Маржа:
-        {% if tender.margin_byn > 0 %}
-            <span class="margin-positive">+{{ tender.margin_byn }} BYN ({{ tender.margin_pct }}%)</span>
-        {% else %}
-            <span class="margin-negative">{{ tender.margin_byn }} BYN ({{ tender.margin_pct }}%)</span>
-        {% endif %}
-    </p>
-    {% endif %}
-    {% endif %}
-
-    {% if margin_result and margin_result.positions %}
-    <h4>Сметный анализ</h4>
-    <table class="table table-sm table-striped">
-        <thead>
-            <tr>
-                <th>Позиция</th>
-                <th>Ед.</th>
-                <th>Кол-во</th>
-                <th>Цена тендера</th>
-                <th>Моя цена</th>
-                <th>Разница</th>
-                <th>%</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for p in margin_result.positions %}
-            <tr>
-                <td>{{ p.name }}</td>
-                <td>{{ p.unit }}</td>
-                <td>{{ p.qty }}</td>
-                <td>{{ p.tender_price }}</td>
-                <td>{{ p.my_price }}</td>
-                <td class="{{ 'margin-positive' if p.diff_byn > 0 else 'margin-negative' }}">{{ p.diff_byn }}</td>
-                <td>{{ p.diff_pct if p.diff_pct is not none else '-' }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    <p>Сопоставлено позиций: {{ margin_result.matched_count }} / {{ margin_result.total_count }}</p>
-    {% endif %}
-
-    <h4>Оценка тендера</h4>
-    <div class="btn-group" role="group">
-        <button class="btn btn-success" onclick="sendFeedback('👍')">👍 Интересно</button>
-        <button class="btn btn-warning" onclick="sendFeedback('🤷')">🤷 Может быть</button>
-        <button class="btn btn-danger" onclick="sendFeedback('👎')">👎 Не интересно</button>
-    </div>
-    <div id="feedback-result" class="mt-2 text-success"></div>
+<!-- Back -->
+<div class="mb-3">
+  <a href="/" style="font-size:.88rem; color:#888; text-decoration:none;">← Все тендеры</a>
 </div>
 
-<script>
-function sendFeedback(reaction) {
-    fetch(window.location.pathname + '/feedback', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'reaction=' + encodeURIComponent(reaction)
-    }).then(() => {
-        document.getElementById('feedback-result').textContent = 'Спасибо за оценку: ' + reaction;
-    });
-}
-</script>
-</body>
-</html>
+<!-- Header -->
+<div class="mb-4">
+  <h4 class="mb-1">{{ tender.title or 'Без названия' }}</h4>
+  <div style="color:#666; font-size:.92rem;">
+    {% if tender.region %}📍 {{ tender.region }}{% endif %}
+    {% if tender.deadline %} &nbsp;·&nbsp; 📅 до {{ tender.deadline[:10] }}{% endif %}
+    {% if tender.url %}
+      &nbsp;·&nbsp; <a href="{{ tender.url }}" target="_blank"
+                      style="color:#888; font-size:.85rem;">Открыть на сайте ↗</a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 4 metric cards -->
+<div class="row g-3 mb-4">
+  {% set metrics = [
+    ('K', 'Совпадение', tender.k_score, 'Matched / All active items'),
+    ('L', 'Релевантность', tender.l_score, 'Weighted match / Budget'),
+    ('M', 'Маржа', tender.m_score, 'Our margin / Budget'),
+    ('S', 'Балл итог', tender.s_score, 'M×50% + L×30% + K×20%'),
+  ] %}
+  {% for letter, label, value, hint in metrics %}
+  <div class="col-6 col-md-3">
+    <div class="card">
+      <div class="metric-card">
+        <div class="metric-label">{{ label }}
+          <span title="{{ hint }}" style="cursor:help; color:#bbb; font-size:.85rem;">ⓘ</span>
+        </div>
+        {% if value is not none %}
+          {% if letter == 'S' %}
+            <div class="metric-value {{ 'metric-green' if value >= 0.1 else '' }}">
+              {{ "%.1f"|format(value * 100) }}
+            </div>
+            <div style="font-size:.8rem; color:#888;">из 100</div>
+          {% else %}
+            <div class="metric-value {{ 'metric-green' if value >= 0.1 else 'metric-red' if value < 0 else '' }}">
+              {{ "%.1f"|format(value * 100) }}%
+            </div>
+          {% endif %}
+        {% else %}
+          <div class="metric-value" style="color:#ccc;">—</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Budget pill -->
+{% if tender.budget_byn %}
+<div class="mb-3" style="font-size:.95rem;">
+  💰 Бюджет: <strong>{{ tender.budget_byn | fmt_money }} BYN</strong>
+</div>
+{% endif %}
+
+<!-- Positions table -->
+<div class="card mb-4">
+  <div style="padding:.85rem 1.2rem; border-bottom:.5px solid #dde0e6;
+              font-weight:600; font-size:.95rem;">
+    Позиции сметы
+    <span style="font-weight:400; color:#888; font-size:.82rem; margin-left:.5rem;">
+      ({{ positions | length }})
+    </span>
+  </div>
+  {% if positions %}
+  <div style="overflow-x:auto;">
+    <table class="table table-sm mb-0 align-middle">
+      <thead class="table-light">
+        <tr>
+          <th style="padding-left:1rem; width:35%;">Наименование</th>
+          <th>Ед.</th>
+          <th class="text-end">Кол-во</th>
+          <th class="text-end">Цена сметы</th>
+          <th class="text-end">Наша цена</th>
+          <th class="text-end">Маржа BYN</th>
+          <th class="text-center" style="width:80px;">Статус</th>
+          <th style="width:30%;">Совпадение</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in positions %}
+        {% if p.match_status == 'green' %}
+          {% set row_cls = 'row-green' %}
+        {% elif p.match_status == 'yellow' %}
+          {% set row_cls = 'row-yellow' %}
+        {% else %}
+          {% set row_cls = 'row-grey' %}
+        {% endif %}
+        <tr class="{{ row_cls }}">
+          <td style="padding-left:1rem;">{{ p.smeta_name }}</td>
+          <td>{{ p.smeta_unit }}</td>
+          <td class="text-end">{{ p.smeta_quantity }}</td>
+          <td class="text-end">
+            {% if p.smeta_total_cost %}
+              {{ p.smeta_total_cost | fmt_money }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="text-end">
+            {% if p.matched_my_price is not none %}
+              {{ p.matched_my_price | fmt_money }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="text-end">
+            {% if p.match_status == 'green' and p.margin_byn is not none %}
+              <span class="{{ 'pill-green' if p.margin_byn >= 0 else 'pill-red' }}">
+                {{ '+' if p.margin_byn >= 0 else '' }}{{ p.margin_byn | fmt_money }}
+              </span>
+            {% else %}—{% endif %}
+          </td>
+          <td class="text-center">
+            {% if p.match_status == 'green' %}
+              <span class="dot-green"></span>🟢
+            {% elif p.match_status == 'yellow' %}
+              <span class="dot-yellow"></span>🟡
+            {% else %}
+              <span class="dot-grey"></span>⚫
+            {% endif %}
+          </td>
+          <td style="font-size:.82rem; color:#666;">
+            {% if p.matched_item_name %}
+              {{ p.matched_item_name[:50] }}
+              <br>
+              <span style="color:#aaa;">conf: {{ "%.2f"|format(p.confidence or 0) }}</span>
+            {% elif p.match_status == 'grey' %}
+              <span style="color:#aaa;">нет совпадения</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="p-4 text-muted">Позиции ещё не загружены (AI-анализ в процессе)</div>
+  {% endif %}
+</div>
+
+<!-- AI comment -->
+{% if tender.ai_comment %}
+<div class="card p-4">
+  <div style="font-weight:600; margin-bottom:.6rem; font-size:.9rem; color:#888;
+              text-transform:uppercase; letter-spacing:.04em;">💬 AI-комментарий</div>
+  <div style="line-height:1.6;">{{ tender.ai_comment }}</div>
+</div>
+{% endif %}
+
+{% endblock %}

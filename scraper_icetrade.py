@@ -1,148 +1,142 @@
 """
 Парсер тендеров с icetrade.by (Белорусская универсальная товарная биржа).
+
+Возвращает стандартизированные словари готовые для db.save_tender().
 """
 
 import re
 import time
+import random
 from datetime import datetime
 
 import requests
+import urllib3
 from bs4 import BeautifulSoup
 
-from categories import is_relevant
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 from logger import get_logger
 
 log = get_logger("scraper_icetrade")
 
 BASE_URL = "https://icetrade.by"
 LIST_URL = f"{BASE_URL}/search/auctions"
-CARD_URL = f"{BASE_URL}/tenders/all/view/{{id}}"
+CARD_URL_TPL = f"{BASE_URL}/tenders/all/view/{{id}}"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
     "Accept-Language": "ru-RU,ru;q=0.9",
 }
 
-REQUEST_DELAY = (1, 2)
-
-# 407-442 = Строительство/архитектура и подкатегории
-# 20-23 = Безопасность + Видеонаблюдение
+# Construction + security industries
 INDUSTRIES = "407.408-442.20.21.22.23"
 
-ACTIVE_STATUSES = [
-    "подача предложений",
-    "подача заявок",
-    "открыт",
+REGIONS = [
+    "Минская", "Витебская", "Могилёвская", "Гродненская",
+    "Брестская", "Гомельская", "г. Минск", "Минск",
 ]
 
+ACTIVE_STATUSES = ["подача предложений", "подача заявок", "открыт"]
+
 LABEL_MAP = {
-    "category": ["отрасль"],
-    "title": ["краткое описание", "предмет закупки"],
+    "title":    ["краткое описание", "предмет закупки"],
     "customer": ["наименование организатора", "наименование заказчика"],
     "deadline": ["окончания приема предложений", "окончания приёма"],
-    "posted_at": ["дата размещения"],
-    "financing": ["источник финансирования"],
+    "address":  ["место поставки", "адрес"],
+    "region":   ["область", "регион"],
 }
 
 
 def _sleep():
-    time.sleep(REQUEST_DELAY[0] + (REQUEST_DELAY[1] - REQUEST_DELAY[0]) * 0.5)
+    time.sleep(random.uniform(1, 2.5))
 
 
 def _get(url: str, params=None):
     try:
-        resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
+        resp = requests.get(url, headers=HEADERS, params=params, timeout=60, verify=False)
     except requests.RequestException as e:
-        log.error(f"Ошибка запроса {url}: {e}")
+        log.error(f"Request error {url}: {e}")
         return None
-
     if resp.status_code != 200:
-        log.warning(f"Неожиданный статус {resp.status_code} для {url}")
+        log.warning(f"HTTP {resp.status_code} for {url}")
         return None
-
     return resp
 
 
-def _parse_amount(text: str):
+def _parse_amount(text: str) -> float | None:
     if not text:
         return None
     cleaned = re.sub(r"[^\d.,]", "", text).replace(",", ".")
-    if not cleaned:
-        return None
     try:
-        return float(cleaned)
+        return float(cleaned) if cleaned else None
     except ValueError:
         return None
 
 
-def _parse_deadline(text: str):
+def _parse_deadline(text: str) -> str | None:
     if not text:
         return None
     text = text.strip()
-    match = re.search(r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{1,2}:\d{2}))?", text)
-    if not match:
+    m = re.search(r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{1,2}:\d{2}))?", text)
+    if not m:
         return text
-    date_part = match.group(1)
-    time_part = match.group(2) or "00:00"
     try:
-        dt = datetime.strptime(f"{date_part} {time_part}", "%d.%m.%Y %H:%M")
+        dt = datetime.strptime(f"{m.group(1)} {m.group(2) or '00:00'}", "%d.%m.%Y %H:%M")
         return dt.isoformat()
     except ValueError:
         return text
 
 
-def _match_label(label: str):
-    label_lower = label.lower()
-    for field, keywords in LABEL_MAP.items():
-        for kw in keywords:
-            if kw in label_lower:
-                return field
+def _extract_region(text: str | None) -> str | None:
+    if not text:
+        return None
+    t = text.lower()
+    for r in REGIONS:
+        if r.lower() in t:
+            return "г. Минск" if r == "Минск" else r
     return None
 
 
-def _extract_ids_from_list(html: str):
-    """Извлекает числовые ID тендеров из страницы списка."""
+def _match_label(label: str) -> str | None:
+    label_lower = label.lower()
+    for field, keywords in LABEL_MAP.items():
+        if any(kw in label_lower for kw in keywords):
+            return field
+    return None
+
+
+def _extract_ids_from_page(html: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     ids = []
     for a in soup.select("a[href*='/view/']"):
-        href = a.get("href", "")
-        match = re.search(r"/view/(\d+)", href)
-        if match:
-            tid = match.group(1)
-            if tid not in ids:
-                ids.append(tid)
+        m = re.search(r"/view/(\d+)", a.get("href", ""))
+        if m and m.group(1) not in ids:
+            ids.append(m.group(1))
     return ids
 
 
-def _parse_card(numeric_id: str):
-    url = CARD_URL.format(id=numeric_id)
+def _parse_card(numeric_id: str) -> dict | None:
+    url = CARD_URL_TPL.format(id=numeric_id)
     resp = _get(url)
     if resp is None:
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    data = {"documents": []}
-
-    type_tag = soup.select_one("table.w100 tr.fst b")
-    if type_tag:
-        data["tender_type"] = type_tag.get_text(strip=True)
+    data: dict = {"documents": [], "url": url}
 
     for tr in soup.select("table.w100 tr.af"):
-        label_td = tr.select_one("td.lft")
-        value_td = tr.select_one("td.afv")
-        if not label_td or not value_td:
+        lb = tr.select_one("td.lft")
+        vl = tr.select_one("td.afv")
+        if not lb or not vl:
             continue
-        label = label_td.get_text(strip=True)
-        value = value_td.get_text(" ", strip=True)
-        field = _match_label(label)
+        field = _match_label(lb.get_text(strip=True))
         if field and field not in data:
-            data[field] = value
+            data[field] = vl.get_text(" ", strip=True)
 
-    # Поиск цены и статуса лотов
     page_text = soup.get_text(" ", strip=True).lower()
-    is_active = any(s in page_text for s in ACTIVE_STATUSES)
-    data["_active"] = is_active
+    data["_active"] = any(s in page_text for s in ACTIVE_STATUSES)
 
+    # Extract max BYN amount from page text
     amount = None
     for m in re.finditer(r"([\d\s]{3,})\s*byn", page_text):
         candidate = _parse_amount(m.group(1))
@@ -150,25 +144,26 @@ def _parse_card(numeric_id: str):
             amount = candidate
     data["amount"] = amount
 
-    # Документы
     for a in soup.select("a[href$='.pdf'], a[href$='.docx']"):
         href = a.get("href", "")
         if href:
-            doc_url = href if href.startswith("http") else f"{BASE_URL}{href}"
-            data["documents"].append(doc_url)
+            data["documents"].append(
+                href if href.startswith("http") else f"{BASE_URL}{href}"
+            )
 
-    data["url"] = url
     return data
 
 
-def scrape_icetrade(max_pages: int = 3) -> list:
+def fetch_tenders(checkpoint_external_id: str | None = None,
+                  max_pages: int = 5) -> list[dict]:
     """
-    Скрапит тендеры с icetrade.by.
+    Fetch new tenders from icetrade.by.
 
-    Возвращает список словарей, готовых для db.save_tender().
+    Paginates from newest to oldest, stopping when checkpoint_external_id is seen.
+    Returns list of standardized tender dicts.
     """
     results = []
-    seen_ids = set()
+    seen = set()
 
     for page in range(1, max_pages + 1):
         params = {
@@ -179,77 +174,61 @@ def scrape_icetrade(max_pages: int = 3) -> list:
             "onPage": 20,
             "page": page,
         }
-        log.info(f"Загрузка списка icetrade, страница {page}")
+        log.info(f"icetrade page {page}")
         resp = _get(LIST_URL, params=params)
         if resp is None:
             continue
 
-        ids = _extract_ids_from_list(resp.text)
-        if not ids:
-            log.info(f"Страница {page} icetrade пуста, останавливаемся")
+        numeric_ids = _extract_ids_from_page(resp.text)
+        if not numeric_ids:
+            log.info(f"icetrade page {page} empty, stopping")
             break
 
-        for numeric_id in ids:
-            if numeric_id in seen_ids:
+        stop = False
+        for nid in numeric_ids:
+            ext_id = f"ice_{nid}"
+            if ext_id in seen:
                 continue
-            seen_ids.add(numeric_id)
+            seen.add(ext_id)
 
-            tender_id = f"ice_{numeric_id}"
-
-            try:
-                card = _parse_card(numeric_id)
-            except Exception as e:
-                log.error(f"Ошибка парсинга карточки ice_{numeric_id}: {e}")
-                continue
+            if checkpoint_external_id and ext_id == checkpoint_external_id:
+                log.info(f"icetrade reached checkpoint {checkpoint_external_id}, stopping")
+                stop = True
+                break
 
             _sleep()
-
+            try:
+                card = _parse_card(nid)
+            except Exception as e:
+                log.error(f"icetrade card error {ext_id}: {e}")
+                continue
             if card is None:
                 continue
-
             if not card.get("_active", True):
                 continue
 
-            title = card.get("title", "")
-            description = card.get("category", "")
-
-            relevant, matched_group, priority = is_relevant(title, description)
-            if not relevant:
+            title = card.get("title", "").strip()
+            if not title:
                 continue
 
-            deadline_iso = _parse_deadline(card.get("deadline", ""))
-            posted_at_iso = _parse_deadline(card.get("posted_at", ""))
+            address = card.get("address", "")
+            region = _extract_region(address) or _extract_region(card.get("customer", ""))
 
-            tender = {
-                "id": tender_id,
+            results.append({
+                "external_id": ext_id,
                 "source": "icetrade",
                 "title": title,
-                "description": description,
-                "amount": card.get("amount"),
-                "deadline": deadline_iso,
-                "posted_at": posted_at_iso,
-                "customer": card.get("customer"),
-                "customer_address": None,
                 "url": card["url"],
-                "category": card.get("category"),
-                "matched_group": matched_group,
-                "priority": priority,
-                "okrb_code": None,
-                "financing": card.get("financing"),
-                "payment_terms": None,
-                "tender_type": card.get("tender_type"),
-                "raw_data": card,
-            }
+                "region": region,
+                "budget_byn": card.get("amount"),
+                "deadline": _parse_deadline(card.get("deadline", "")),
+                "doc_urls": card.get("documents", []),
+            })
+            log.info(f"icetrade found: {ext_id} — {title[:60]}")
 
-            results.append(tender)
-            log.info(f"Найден релевантный тендер: {tender_id} - {title[:60]}")
-
+        if stop:
+            break
         _sleep()
 
-    log.info(f"icetrade: найдено {len(results)} релевантных тендеров")
+    log.info(f"icetrade total fetched: {len(results)}")
     return results
-
-
-if __name__ == "__main__":
-    for t in scrape_icetrade(max_pages=1):
-        print(t["id"], t["title"], t["amount"], t["deadline"])

@@ -1,0 +1,539 @@
+"""
+AI agent: 4-step pipeline for tender analysis.
+
+Step 1 — Claude extracts smeta positions from documents.
+Step 2 — Claude matches positions against contractor price list.
+Step 3 — Python calculates K, L, M, S scores (never Claude).
+Step 4 — Claude writes a 2-3 sentence Russian comment.
+"""
+
+import base64
+import io
+import json
+import re
+import time
+
+import anthropic
+import requests
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+import db
+import notifier
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
+from logger import get_logger
+
+log = get_logger("file_processor")
+
+_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=3)
+
+_CATEGORIES = [
+    "отделка_потолков", "отделка_стен", "облицовка_стен", "полы",
+    "облицовка_полов", "металлоконструкции", "двери_окна",
+    "отопление", "электрика", "леса", "прочее",
+]
+
+_ADJACENT = {
+    "отделка_потолков": {"отделка_стен", "облицовка_стен"},
+    "отделка_стен":     {"отделка_потолков", "облицовка_стен"},
+    "облицовка_стен":   {"отделка_стен", "облицовка_полов"},
+    "полы":             {"облицовка_полов"},
+    "облицовка_полов":  {"полы", "облицовка_стен"},
+    "металлоконструкции": {"двери_окна", "леса"},
+    "двери_окна":       {"металлоконструкции"},
+    "отопление":        {"электрика"},
+    "электрика":        {"отопление"},
+    "леса":             {"металлоконструкции"},
+    "прочее":           set(),
+}
+
+# ---------------------------------------------------------------------------
+# Text extraction helpers
+# ---------------------------------------------------------------------------
+
+def _pdf_to_text(file_bytes: bytes) -> tuple[str, bool]:
+    """Returns (text, is_scan)."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            pages = [p.extract_text() or "" for p in pdf.pages]
+        text = "\n".join(pages).strip()
+        if len(text) >= 100:
+            return text, False
+    except Exception as e:
+        log.warning(f"pdfplumber error: {e}")
+    return "", True
+
+
+def _docx_to_text(file_bytes: bytes) -> str:
+    from docx import Document
+    doc = Document(io.BytesIO(file_bytes))
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+
+def _pdf_to_images_b64(file_bytes: bytes) -> list[str]:
+    try:
+        from pdf2image import convert_from_bytes
+        images = convert_from_bytes(
+            file_bytes, dpi=200, fmt="png",
+            poppler_path=r"C:\poppler\Library\bin",
+        )
+        result = []
+        for img in images:
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            result.append(base64.b64encode(buf.getvalue()).decode("ascii"))
+        return result
+    except Exception as e:
+        log.error(f"pdf2image error: {e}")
+        return []
+
+
+def _extract_text_from_documents(documents: list[tuple[str, bytes]]) -> tuple[str, list[str]]:
+    """Returns (combined_text, list_of_scan_image_b64)."""
+    texts = []
+    images = []
+    for filename, file_bytes in documents:
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if ext == "pdf":
+            text, is_scan = _pdf_to_text(file_bytes)
+            if is_scan:
+                images.extend(_pdf_to_images_b64(file_bytes))
+            else:
+                texts.append(text)
+        elif ext == "docx":
+            try:
+                texts.append(_docx_to_text(file_bytes))
+            except Exception as e:
+                log.warning(f"docx error {filename}: {e}")
+    return "\n\n".join(texts), images
+
+
+# ---------------------------------------------------------------------------
+# Claude API calls
+# ---------------------------------------------------------------------------
+
+def _call_claude(prompt: str, images_b64: list[str] = None) -> str:
+    content = []
+    for img in (images_b64 or []):
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": img},
+        })
+    content.append({"type": "text", "text": prompt})
+    msg = _client.messages.create(
+        model=ANTHROPIC_MODEL,
+        max_tokens=8192,
+        messages=[{"role": "user", "content": content}],
+    )
+    return "".join(b.text for b in msg.content if b.type == "text")
+
+
+def _parse_json_response(raw: str):
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+        raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    for pat in (r"\{[\s\S]*\}", r"\[[\s\S]*\]"):
+        m = re.search(pat, raw)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Step 1: Extract positions from documents
+# ---------------------------------------------------------------------------
+
+_EXTRACT_PROMPT = """\
+Ты — эксперт по строительным сметам Республики Беларусь.
+Извлеки все рабочие позиции из документа ниже.
+
+Пропусти итоговые строки: ИТОГО, Накладные расходы, Плановая прибыль, ОХР, ОПР и т.п.
+
+Категории: отделка_потолков / отделка_стен / облицовка_стен / полы /
+облицовка_полов / металлоконструкции / двери_окна / отопление / электрика / леса / прочее
+
+Верни ТОЛЬКО валидный JSON без пояснений:
+{
+  "positions": [
+    {
+      "num": "1",
+      "name": "Полное наименование позиции",
+      "unit": "ед. изм.",
+      "quantity": 0.0,
+      "labor_cost": 0.0,
+      "material_cost": 0.0,
+      "transport_cost": 0.0,
+      "total_cost": 0.0,
+      "category": "отделка_стен"
+    }
+  ],
+  "total_budget": 0.0
+}
+
+ДОКУМЕНТ:
+"""
+
+
+def _step1_extract(text: str, images: list[str]) -> dict | None:
+    prompt = _EXTRACT_PROMPT + (text if text else "(см. изображение)")
+
+    def attempt():
+        raw = _call_claude(prompt, images_b64=images if not text else None)
+        return _parse_json_response(raw)
+
+    data = attempt()
+    if not isinstance(data, dict) or "positions" not in data:
+        log.warning("Step1: bad response, retrying in 10s")
+        time.sleep(10)
+        data = attempt()
+    if not isinstance(data, dict) or "positions" not in data:
+        return None
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Match positions against price list
+# ---------------------------------------------------------------------------
+
+_MATCH_PROMPT = """\
+Сопоставь позиции сметы с позициями прайс-листа подрядчика.
+
+ПРАЙС-ЛИСТ (используй точные id):
+{price_list}
+
+ПОЗИЦИИ СМЕТЫ:
+{smeta_positions}
+
+Формула уверенности (confidence) — следуй строго:
+  ЛЕКСИКА (0–0.6):
+    Одинаковые слова             → 0.6
+    Однокоренные слова           → 0.3–0.4
+    Одна тема, разные слова      → 0.1–0.2
+    Нет связи                    → 0.0
+  КАТЕГОРИЯ (0–0.3):
+    Та же категория              → 0.3
+    Смежные категории            → 0.15
+    Разные категории             → 0.0
+  ЕД. ИЗМ. (0–0.1):
+    Совпадают                    → 0.1
+    Не совпадают                 → 0.0
+
+  match_status:
+    confidence >= 0.75           → green
+    confidence 0.40–0.74         → yellow
+    confidence < 0.40            → grey (matched_item и matched_item_id = null)
+
+Верни ТОЛЬКО валидный JSON без пояснений:
+{
+  "matches": [
+    {
+      "smeta_name": "наименование из сметы",
+      "matched_item": "наименование из прайса или null",
+      "matched_item_id": 123,
+      "confidence": 0.55,
+      "match_status": "yellow",
+      "reasoning": "lexical(0.35) + category(0.3) + unit(0.0) = 0.65"
+    }
+  ]
+}
+"""
+
+
+def _step2_match(positions: list[dict], price_items: list[dict]) -> list[dict] | None:
+    price_list_text = json.dumps(
+        [{"id": p["id"], "name": p["name"], "unit": p["unit"], "category": p["category"]}
+         for p in price_items],
+        ensure_ascii=False,
+    )
+    smeta_text = json.dumps(
+        [{"name": p["name"], "unit": p["unit"], "category": p["category"]}
+         for p in positions],
+        ensure_ascii=False,
+    )
+    prompt = _MATCH_PROMPT.format(
+        price_list=price_list_text,
+        smeta_positions=smeta_text,
+    )
+
+    def attempt():
+        raw = _call_claude(prompt)
+        data = _parse_json_response(raw)
+        if isinstance(data, dict):
+            return data.get("matches")
+        return None
+
+    matches = attempt()
+    if not isinstance(matches, list):
+        log.warning("Step2: bad response, retrying in 10s")
+        time.sleep(10)
+        matches = attempt()
+    if not isinstance(matches, list):
+        return None
+    return matches
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Python calculates K, L, M, S (never Claude)
+# ---------------------------------------------------------------------------
+
+def _step3_scores(positions: list[dict], matches: list[dict],
+                  total_budget: float, settings: dict) -> dict | None:
+    """Returns dict with scores and merged position data, or None if filter fails."""
+    active_items = db.get_active_price_items()
+    if not active_items:
+        log.warning("Step3: price list is empty, cannot score")
+        return None
+
+    # Build match lookup by smeta_name
+    match_by_name = {m["smeta_name"]: m for m in matches}
+
+    merged = []
+    for pos in positions:
+        m = match_by_name.get(pos["name"]) or {}
+        confidence = float(m.get("confidence") or 0)
+        match_status = m.get("match_status") or "grey"
+        matched_item_id = m.get("matched_item_id") if match_status != "grey" else None
+
+        qty = float(pos.get("quantity") or 1)
+        total_cost = float(pos.get("total_cost") or 0)
+
+        margin_byn = None
+        if match_status == "green" and matched_item_id:
+            item = db.get_price_item(matched_item_id)
+            if item:
+                my_price = float(item.get("my_price") or 0)
+                # margin = what tender pays - what we do it for
+                margin_byn = round(my_price * qty - total_cost, 2)
+
+        merged.append({
+            "smeta_name": pos["name"],
+            "smeta_unit": pos.get("unit", ""),
+            "smeta_quantity": qty,
+            "smeta_labor_cost": pos.get("labor_cost"),
+            "smeta_material_cost": pos.get("material_cost"),
+            "smeta_transport_cost": pos.get("transport_cost"),
+            "smeta_total_cost": total_cost,
+            "category": pos.get("category"),
+            "matched_item_id": matched_item_id,
+            "confidence": confidence,
+            "match_status": match_status,
+            "margin_byn": margin_byn,
+        })
+
+    if total_budget <= 0:
+        total_budget = sum(p["smeta_total_cost"] for p in merged) or 1
+
+    # K — matched positions / total active price items
+    matched_count = sum(1 for p in merged if p["confidence"] >= 0.40)
+    k_score = matched_count / len(active_items)
+
+    if k_score < 0.30:
+        return {"fail": "failed_K", "merged": merged}
+
+    # L — weighted relevance
+    l_numerator = sum(
+        p["smeta_total_cost"] * p["confidence"]
+        for p in merged if p["confidence"] >= 0.40
+    )
+    l_score = l_numerator / total_budget
+
+    x_threshold = float(settings.get("x_threshold", 30)) / 100
+    if l_score < x_threshold:
+        return {"fail": "failed_L", "merged": merged}
+
+    # M — margin (only green positions)
+    margin_sum = sum(
+        p["margin_byn"]
+        for p in merged
+        if p["match_status"] == "green" and p["margin_byn"] is not None
+    )
+    m_score = margin_sum / total_budget
+
+    y_threshold = float(settings.get("y_threshold", 5)) / 100
+    if m_score < y_threshold:
+        return {"fail": "failed_M", "merged": merged}
+
+    # S — final score
+    s_score = m_score * 0.5 + l_score * 0.3 + k_score * 0.2
+
+    return {
+        "merged": merged,
+        "k_score": k_score,
+        "l_score": l_score,
+        "m_score": m_score,
+        "s_score": s_score,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Step 4: AI comment
+# ---------------------------------------------------------------------------
+
+_COMMENT_PROMPT = """\
+Ты — советник белорусского строительного подрядчика.
+
+Тендер: {title}
+Бюджет: {budget} BYN
+Совпадение K: {k:.1%}
+Релевантность L: {l:.1%}
+Маржа M: {m:.1%}
+
+Топ-5 самых дорогих позиций:
+{top5}
+
+Последние 5 подходящих тендеров для контекста:
+{history}
+
+Напиши 2–3 предложения на русском:
+— Стоит ли участвовать в этом тендере?
+— Где основная возможность для прибыли?
+— Есть ли риски?
+"""
+
+
+def _step4_comment(tender_id: int, tender: dict, scores: dict) -> str:
+    top5 = db.get_top_positions(tender_id, limit=5)
+    history = db.get_last_suitable_tenders(limit=5)
+    prompt = _COMMENT_PROMPT.format(
+        title=tender.get("title", ""),
+        budget=tender.get("budget_byn", 0),
+        k=scores.get("k_score", 0),
+        l=scores.get("l_score", 0),
+        m=scores.get("m_score", 0),
+        top5=json.dumps(top5, ensure_ascii=False),
+        history=json.dumps(history, ensure_ascii=False),
+    )
+    try:
+        return _call_claude(prompt)
+    except Exception as e:
+        log.error(f"Step4 comment failed for tender {tender_id}: {e}")
+        return "Комментарий недоступен"
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+def analyze_tender(tender_id: int, documents: list[tuple[str, bytes]]):
+    """
+    Full 4-step analysis. Mutates DB state.
+    documents = list of (filename, bytes).
+    """
+    if not documents:
+        log.error(f"No documents for tender {tender_id}")
+        db.reject_tender(tender_id, "ai_error")
+        return
+
+    # Step 1 — extract positions
+    text, images = _extract_text_from_documents(documents)
+    if not text and not images:
+        log.error(f"Could not extract any content from documents for tender {tender_id}")
+        db.reject_tender(tender_id, "ai_error")
+        return
+
+    extraction = _step1_extract(text, images)
+    if extraction is None:
+        log.error(f"Step1 extraction failed for tender {tender_id}")
+        db.reject_tender(tender_id, "ai_error")
+        return
+
+    positions = extraction.get("positions", [])
+    total_budget = float(extraction.get("total_budget") or 0)
+    if not positions:
+        log.warning(f"No positions extracted for tender {tender_id}")
+        db.reject_tender(tender_id, "ai_error")
+        return
+
+    # Step 2 — match against price list
+    active_items = db.get_active_price_items()
+    matches = _step2_match(positions, active_items)
+    if matches is None:
+        log.error(f"Step2 matching failed for tender {tender_id}")
+        db.reject_tender(tender_id, "ai_error")
+        return
+
+    # Step 3 — scores (Python only)
+    settings = db.get_search_settings()
+    result = _step3_scores(positions, matches, total_budget, settings)
+
+    if result is None:
+        db.reject_tender(tender_id, "ai_error")
+        return
+
+    # Persist positions regardless of outcome (useful for debug)
+    db.save_tender_positions(tender_id, result["merged"])
+
+    # Auto-add grey positions as unknown inactive price items
+    for pos in result["merged"]:
+        if pos["match_status"] == "grey":
+            db.add_unknown_price_item(
+                name=pos["smeta_name"],
+                unit=pos["smeta_unit"],
+                my_price=pos["smeta_total_cost"],
+            )
+
+    if "fail" in result:
+        db.reject_tender(tender_id, result["fail"])
+        log.info(f"Tender {tender_id} rejected: {result['fail']}")
+        return
+
+    # Passed all filters — save scores
+    db.update_tender_scores(
+        tender_id,
+        result["k_score"],
+        result["l_score"],
+        result["m_score"],
+        result["s_score"],
+    )
+
+    # Step 4 — AI comment (never rejects tender on failure)
+    tender = db.get_tender(tender_id)
+    comment = _step4_comment(tender_id, tender, result)
+    db.update_tender_ai_comment(tender_id, comment)
+
+    db.update_tender_status(tender_id, "suitable")
+    log.info(
+        f"Tender {tender_id} → suitable "
+        f"K={result['k_score']:.2f} L={result['l_score']:.2f} "
+        f"M={result['m_score']:.2f} S={result['s_score']:.2f}"
+    )
+
+    notifier.send_email(tender_id)
+
+
+# ---------------------------------------------------------------------------
+# Document downloader (used by parser)
+# ---------------------------------------------------------------------------
+
+DOWNLOAD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
+}
+
+
+def download_documents(doc_urls: list[str]) -> list[tuple[str, bytes]]:
+    """Download document files. Returns list of (filename, bytes)."""
+    results = []
+    for url in doc_urls:
+        try:
+            resp = requests.get(
+                url, headers=DOWNLOAD_HEADERS, timeout=60, verify=False
+            )
+            if resp.status_code == 200:
+                filename = url.rsplit("/", 1)[-1].split("?")[0] or "document"
+                results.append((filename, resp.content))
+            else:
+                log.warning(f"Download failed {url}: HTTP {resp.status_code}")
+        except Exception as e:
+            log.error(f"Download error {url}: {e}")
+    return results

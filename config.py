@@ -1,28 +1,24 @@
-"""Конфигурация проекта: загрузка переменных окружения из .env."""
+"""Project configuration — all runtime values come from .env."""
 
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+EMAIL_FROM = os.getenv("EMAIL_FROM", "")
+EMAIL_TO = os.getenv("EMAIL_TO", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/tender_bot")
 
 
 def check_config() -> bool:
-    """Проверяет, что все обязательные переменные окружения заполнены."""
-    missing = []
-    if not TELEGRAM_BOT_TOKEN:
-        missing.append("TELEGRAM_BOT_TOKEN")
-    if not TELEGRAM_CHAT_ID:
-        missing.append("TELEGRAM_CHAT_ID")
+    ok = True
     if not ANTHROPIC_API_KEY:
-        missing.append("ANTHROPIC_API_KEY")
-
-    if missing:
-        print(f"[config] Не заданы переменные окружения: {', '.join(missing)}")
-        print("[config] Заполните файл .env (см. .env.example)")
-        return False
-
-    return True
+        print("[config] ANTHROPIC_API_KEY not set in .env")
+        ok = False
+    if not DATABASE_URL:
+        print("[config] DATABASE_URL not set in .env")
+        ok = False
+    return ok

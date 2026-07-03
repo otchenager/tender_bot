@@ -1,0 +1,12 @@
+Which features should I add to the tender bot? (pick any)
+
+  1. [ ] Response caching
+  Cache Claude results per file (hash-based) so re-uploading the same PDF is instant and costs nothing. Biggest money-saver.
+  2. [ ] Telegram alerts
+  Push a Telegram message when a new high-margin (🟢) tender is found, with object name, margin %, and deadline.
+  3. [ ] Excel export
+  Export the price list and per-tender analysis to .xlsx for sharing with colleagues / accounting.
+  4. [ ] Scheduled scraping
+  Auto-run the goszakupki/icetrade scrapers on a schedule (e.g. every morning) instead of manually.
+  5. [ ] Type something
+>    Submit

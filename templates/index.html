@@ -1,92 +1,108 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Тендеры</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .verdict-Перспективный { background-color: #d1f5d3; }
-        .verdict-Сомнительный { background-color: #fff3cd; }
-        .verdict-Пропустить { background-color: #f8d7da; }
-        .margin-positive { color: #198754; font-weight: 600; }
-        .margin-negative { color: #dc3545; font-weight: 600; }
-        .margin-unknown { color: #6c757d; }
-        body { padding: 20px; }
-    </style>
-</head>
-<body>
-<div class="container-fluid">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <h2>Тендеры</h2>
-        <div>
-            <a href="/" class="btn btn-outline-primary btn-sm">Лента</a>
-            <a href="/prices" class="btn btn-outline-secondary btn-sm">Цены</a>
-        </div>
-    </div>
+{% extends "base.html" %}
+{% set active_tab = "tenders" %}
+{% block title %}Подходящие тендеры{% endblock %}
 
-    <form class="row g-2 mb-3" method="get">
-        <div class="col-auto">
-            <label class="form-label mb-0">Мин. оценка</label>
-            <input type="number" name="min_score" min="1" max="10" class="form-control form-control-sm"
-                   value="{{ filters.min_score or '' }}">
-        </div>
-        <div class="col-auto">
-            <label class="form-label mb-0">Источник</label>
-            <select name="source" class="form-select form-select-sm">
-                <option value="">Все</option>
-                <option value="goszakupki" {% if filters.source == 'goszakupki' %}selected{% endif %}>goszakupki</option>
-                <option value="icetrade" {% if filters.source == 'icetrade' %}selected{% endif %}>icetrade</option>
-            </select>
-        </div>
-        <div class="col-auto">
-            <label class="form-label mb-0">Категория</label>
-            <input type="text" name="category" class="form-control form-control-sm"
-                   value="{{ filters.category or '' }}" placeholder="например: видеонаблюдение">
-        </div>
-        <div class="col-auto align-self-end">
-            <button class="btn btn-primary btn-sm" type="submit">Фильтр</button>
-            <a href="/" class="btn btn-outline-secondary btn-sm">Сброс</a>
-        </div>
-    </form>
+{% block content %}
 
-    <table class="table table-hover align-middle">
-        <thead>
-            <tr>
-                <th>Тендер</th>
-                <th>Сумма</th>
-                <th>Маржа</th>
-                <th>Оценка</th>
-                <th>Источник</th>
-                <th>Статус</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for t in tenders %}
-            <tr class="verdict-{{ t.verdict or '' }}">
-                <td>
-                    <a href="/tender/{{ t.id }}">{{ t.title }}</a><br>
-                    <small class="text-muted">{{ t.customer or '' }}</small>
-                </td>
-                <td>{{ '%.2f'|format(t.amount) if t.amount is not none else '-' }} BYN</td>
-                <td>
-                    {% if t.margin_byn is none %}
-                        <span class="margin-unknown">нет данных</span>
-                    {% elif t.margin_byn > 0 %}
-                        <span class="margin-positive">+{{ '%.2f'|format(t.margin_byn) }} BYN ({{ t.margin_pct }}%)</span>
-                    {% else %}
-                        <span class="margin-negative">{{ '%.2f'|format(t.margin_byn) }} BYN ({{ t.margin_pct }}%)</span>
-                    {% endif %}
-                </td>
-                <td>{{ t.score if t.score is not none else '-' }}/10</td>
-                <td>{{ t.source }}</td>
-                <td>{{ 'отправлен' if t.sent else 'новый' }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="6" class="text-center text-muted">Тендеров пока нет</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<!-- Suitable tenders table -->
+<div class="card mb-4">
+  <div style="padding:.85rem 1.2rem; border-bottom:.5px solid #dde0e6;
+              font-weight:600; font-size:.95rem;">
+    Подходящие тендеры
+    <span style="font-weight:400; color:#888; font-size:.85rem; margin-left:.5rem;">
+      ({{ tenders|length }})
+    </span>
+  </div>
+  <table class="table table-hover mb-0 align-middle">
+    <thead class="table-light">
+      <tr>
+        <th style="width:38%; padding-left:1.2rem;">Название</th>
+        <th class="text-end">Бюджет</th>
+        <th class="text-center">K%</th>
+        <th class="text-center">L%</th>
+        <th class="text-center">M%</th>
+        <th class="text-center">Балл S</th>
+        <th>Дата</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in tenders %}
+      <tr onclick="location.href='/tender/{{ t.id }}'" style="cursor:pointer;">
+        <td style="padding-left:1.2rem;">
+          <div style="font-weight:600; font-size:.95rem;">
+            {{ t.title or 'Без названия' }}
+          </div>
+          <div style="font-size:.8rem; color:#888;">
+            {{ t.region or '' }}
+            {% if t.deadline %}· до {{ t.deadline[:10] }}{% endif %}
+          </div>
+        </td>
+        <td class="text-end">
+          {% if t.budget_byn %}
+            <strong>{{ t.budget_byn | fmt_money }}</strong> BYN
+          {% else %}—{% endif %}
+        </td>
+        <td class="text-center">
+          {% if t.k_score is not none %}
+            {{ "%.0f"|format(t.k_score * 100) }}%
+          {% else %}—{% endif %}
+        </td>
+        <td class="text-center">
+          {% if t.l_score is not none %}
+            {{ "%.0f"|format(t.l_score * 100) }}%
+          {% else %}—{% endif %}
+        </td>
+        <td class="text-center">
+          {% if t.m_score is not none %}
+            <span class="{{ 'pill-green' if t.m_score >= 0.1 else 'pill-yellow' }}">
+              {{ "%.1f"|format(t.m_score * 100) }}%
+            </span>
+          {% else %}—{% endif %}
+        </td>
+        <td class="text-center">
+          {% if t.s_score is not none %}
+            <strong>{{ "%.1f"|format(t.s_score * 100) }}</strong>
+          {% else %}—{% endif %}
+        </td>
+        <td style="font-size:.82rem; color:#888;">
+          {{ t.created_at | string | truncate(10, True, '') if t.created_at else '' }}
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="7" class="text-center text-muted py-5">
+          Подходящих тендеров пока нет — парсер работает в фоне
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </div>
-</body>
-</html>
+
+<!-- Rejected funnel (collapsed) -->
+<details>
+  <summary style="cursor:pointer; font-weight:600; font-size:.95rem; color:#555;
+                  padding:.5rem 0; user-select:none; list-style:none;">
+    ▸ Воронка фильтрации (последние 24 часа)
+  </summary>
+  <div class="card mt-2 p-3" style="max-width:480px;">
+    {% set funnel = [
+      ('failed_I', '🔍', 'Не прошли по ключевым словам'),
+      ('failed_B', '💰', 'Бюджет слишком мал'),
+      ('failed_R', '📍', 'Не наш регион'),
+      ('failed_K', '📊', 'Мало совпадений (K < 30%)'),
+      ('failed_L', '📈', 'Низкая релевантность (L)'),
+      ('failed_M', '📉', 'Низкая маржа (M)'),
+      ('ai_error', '⚠️', 'Ошибка AI'),
+    ] %}
+    {% for reason, icon, label in funnel %}
+    <div class="funnel-row">
+      <span class="funnel-cnt">{{ rejected.get(reason, 0) }}</span>
+      <span>{{ icon }}</span>
+      <span style="color:#555;">{{ label }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</details>
+
+{% endblock %}

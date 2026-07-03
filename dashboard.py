@@ -1,223 +1,221 @@
-"""Flask-дашборд для просмотра тендеров, анализа и управления ценами."""
+"""Flask dashboard — 4 tabs: suitable tenders, price list, settings, AI chat."""
 
 import json
 
-from flask import Flask, jsonify, render_template, request
+import anthropic
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 import db
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 from logger import get_logger
 
 log = get_logger("dashboard")
-
 app = Flask(__name__)
 
+_claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=2)
+
+ALL_REGIONS = [
+    "Минская", "Витебская", "Могилёвская", "Гродненская",
+    "Брестская", "Гомельская", "г. Минск",
+]
+
 
 # ---------------------------------------------------------------------------
-# Вспомогательные функции
+# Template filters
 # ---------------------------------------------------------------------------
 
-def _fetch_tenders(filters: dict = None):
-    """Возвращает список тендеров с данными анализа, с учётом фильтров."""
-    filters = filters or {}
-
-    query = """
-        SELECT t.*, a.analysis, a.score, a.verdict, a.margin_byn, a.margin_pct
-        FROM tenders t
-        LEFT JOIN ai_analysis a ON a.tender_id = t.id
-        WHERE 1=1
-    """
-    params = []
-
-    if filters.get("min_score"):
-        query += " AND a.score >= ?"
-        params.append(filters["min_score"])
-
-    if filters.get("source"):
-        query += " AND t.source = ?"
-        params.append(filters["source"])
-
-    if filters.get("category"):
-        query += " AND (t.matched_group = ? OR t.category LIKE ?)"
-        params.append(filters["category"])
-        params.append(f"%{filters['category']}%")
-
-    query += " ORDER BY a.score DESC NULLS LAST, t.parsed_at DESC"
-
-    conn = db.get_conn()
+@app.template_filter("fmt_money")
+def fmt_money(value):
+    if value is None:
+        return "—"
     try:
-        cur = conn.execute(query, params)
-    except db.sqlite3.OperationalError:
-        # NULLS LAST не поддерживается в старых версиях sqlite
-        query = query.replace("a.score DESC NULLS LAST", "a.score IS NULL, a.score DESC")
-        cur = conn.execute(query, params)
-
-    return [dict(row) for row in cur.fetchall()]
+        return "{:,.0f}".format(float(value)).replace(",", " ")
+    except (TypeError, ValueError):
+        return str(value)
 
 
-def _fetch_tender(tender_id: str):
-    conn = db.get_conn()
-    cur = conn.execute("""
-        SELECT t.*, a.analysis, a.score, a.verdict, a.margin_byn, a.margin_pct
-        FROM tenders t
-        LEFT JOIN ai_analysis a ON a.tender_id = t.id
-        WHERE t.id = ?
-    """, (tender_id,))
-    row = cur.fetchone()
-    return dict(row) if row else None
-
-
-def _smeta_positions_for_tender(tender: dict):
-    """Пытается получить позиции сметы и расчёт маржи для отображения."""
+@app.template_filter("fmt_pct")
+def fmt_pct(value):
+    if value is None:
+        return "—"
     try:
-        from smeta_parser import process_tender_smeta
-        from margin_calculator import calculate_margin
-
-        positions = process_tender_smeta(tender)
-        if not positions:
-            return None
-
-        price_items = db.get_price_items()
-        return calculate_margin(positions, price_items)
-    except Exception as e:
-        log.error(f"Не удалось получить позиции сметы для {tender.get('id')}: {e}")
-        return None
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 # ---------------------------------------------------------------------------
-# Маршруты
+# Tab 1 — Suitable tenders
 # ---------------------------------------------------------------------------
 
 @app.route("/")
 def index():
-    filters = {
-        "min_score": request.args.get("min_score", type=int),
-        "source": request.args.get("source") or None,
-        "category": request.args.get("category") or None,
-    }
-    tenders = _fetch_tenders(filters)
-    return render_template("index.html", tenders=tenders, filters=filters)
+    tenders = db.get_suitable_tenders()
+    rejected = db.get_rejected_counts(hours=24)
+    return render_template("index.html", tenders=tenders, rejected=rejected)
 
 
-@app.route("/tender/<tender_id>")
+@app.route("/tender/<int:tender_id>")
 def tender_detail(tender_id):
-    tender = _fetch_tender(tender_id)
+    tender = db.get_tender(tender_id)
     if not tender:
         return "Тендер не найден", 404
-
-    raw_data = tender.get("raw_data")
-    if isinstance(raw_data, str):
-        try:
-            tender["raw_data"] = json.loads(raw_data)
-        except (json.JSONDecodeError, TypeError):
-            tender["raw_data"] = {}
-
-    margin_result = None
-    if tender.get("margin_byn") is not None:
-        margin_result = _smeta_positions_for_tender(tender)
-
-    return render_template("tender.html", tender=tender, margin_result=margin_result)
+    positions = db.get_tender_positions(tender_id)
+    return render_template("tender.html", tender=tender, positions=positions)
 
 
-@app.route("/tender/<tender_id>/feedback", methods=["POST"])
-def tender_feedback(tender_id):
-    reaction = request.form.get("reaction") or (request.json or {}).get("reaction")
-    reason = request.form.get("reason") or (request.json or {}).get("reason")
-    comment = request.form.get("comment") or (request.json or {}).get("comment")
-
-    if reaction not in ("👍", "🤷", "👎"):
-        return jsonify({"error": "invalid reaction"}), 400
-
-    db.save_feedback(tender_id, reaction, reason, comment)
-    return jsonify({"ok": True})
-
+# ---------------------------------------------------------------------------
+# Tab 2 — Price list
+# ---------------------------------------------------------------------------
 
 @app.route("/prices")
 def prices():
-    items = db.get_price_items()
-    materials = [i for i in items if (i.get("category") or "").lower().startswith("матер")]
-    works = [i for i in items if (i.get("category") or "").lower().startswith("работ")]
-    other = [i for i in items if i not in materials and i not in works]
-    return render_template("prices.html", materials=materials, works=works, other=other)
+    items = db.get_all_price_items()
+    return render_template("prices.html", items=items)
 
 
-@app.route("/prices/save", methods=["POST"])
-def prices_save():
-    """Сохраняет обновлённые цены и/или добавляет новую позицию."""
-    new_name = request.form.get("new_name")
-    if new_name:
-        db.save_price_item(
-            name=new_name,
-            unit=request.form.get("new_unit", ""),
-            my_price=request.form.get("new_price", type=float),
-            category=request.form.get("new_category", "Материалы"),
-        )
-
-    for key, value in request.form.items():
-        if not key.startswith("price_"):
-            continue
-        item_id = key.split("_", 1)[1]
-        if not value:
-            continue
-        try:
-            price = float(value)
-        except ValueError:
-            continue
-
-        conn = db.get_conn()
-        cur = conn.execute("SELECT name, unit, category FROM price_items WHERE id = ?", (item_id,))
-        row = cur.fetchone()
-        if row:
-            db.save_price_item(row["name"], row["unit"], price, row["category"])
-
-    return render_template_redirect_to_prices()
+@app.route("/prices/item/<int:item_id>/price", methods=["POST"])
+def prices_update_price(item_id):
+    item = db.get_price_item(item_id)
+    if not item:
+        return jsonify({"error": "not found"}), 404
+    try:
+        new_price = float(request.json.get("price", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid price"}), 400
+    db.save_price_item(
+        item_id, item["name"], item["unit"], new_price,
+        item["category"], item["is_active"],
+    )
+    return jsonify({"ok": True})
 
 
-def render_template_redirect_to_prices():
-    from flask import redirect, url_for
+@app.route("/prices/item/<int:item_id>/toggle", methods=["POST"])
+def prices_toggle(item_id):
+    item = db.get_price_item(item_id)
+    if not item:
+        return jsonify({"error": "not found"}), 404
+    db.toggle_price_item(item_id, not item["is_active"])
+    return jsonify({"is_active": not item["is_active"]})
+
+
+@app.route("/prices/item/<int:item_id>/delete", methods=["POST"])
+def prices_delete(item_id):
+    db.delete_price_item(item_id)
     return redirect(url_for("prices"))
 
 
-@app.route("/api/tenders")
-def api_tenders():
-    filters = {
-        "min_score": request.args.get("min_score", type=int),
-        "source": request.args.get("source") or None,
-        "category": request.args.get("category") or None,
-    }
-    tenders = _fetch_tenders(filters)
-    for t in tenders:
-        t.pop("raw_data", None)
-    return jsonify(tenders)
+@app.route("/prices/add", methods=["POST"])
+def prices_add():
+    name = request.form.get("name", "").strip()
+    if not name:
+        return redirect(url_for("prices"))
+    try:
+        price = float(request.form.get("price", 0))
+    except (TypeError, ValueError):
+        price = 0.0
+    db.save_price_item(
+        None,
+        name,
+        request.form.get("unit", ""),
+        price,
+        request.form.get("category", "прочее"),
+    )
+    return redirect(url_for("prices"))
 
 
-@app.route("/api/stats")
-def api_stats():
-    conn = db.get_conn()
+# ---------------------------------------------------------------------------
+# Tab 3 — Search settings
+# ---------------------------------------------------------------------------
 
-    total_tenders = conn.execute("SELECT COUNT(*) c FROM tenders").fetchone()["c"]
-    analyzed = conn.execute("SELECT COUNT(*) c FROM ai_analysis").fetchone()["c"]
-    sent = conn.execute("SELECT COUNT(*) c FROM tenders WHERE sent = 1").fetchone()["c"]
+@app.route("/settings")
+def settings():
+    s = db.get_search_settings()
+    return render_template("settings.html", settings=s, all_regions=ALL_REGIONS)
 
-    by_source = conn.execute("""
-        SELECT source, COUNT(*) c FROM tenders GROUP BY source
-    """).fetchall()
 
-    by_verdict = conn.execute("""
-        SELECT verdict, COUNT(*) c FROM ai_analysis GROUP BY verdict
-    """).fetchall()
+@app.route("/settings/save", methods=["POST"])
+def settings_save():
+    regions = request.form.getlist("regions")
+    try:
+        min_budget = float(request.form.get("min_budget", 36000))
+    except ValueError:
+        min_budget = 36000.0
+    try:
+        x_threshold = float(request.form.get("x_threshold", 30))
+    except ValueError:
+        x_threshold = 30.0
+    try:
+        y_threshold = float(request.form.get("y_threshold", 5))
+    except ValueError:
+        y_threshold = 5.0
 
-    feedback_stats = db.get_feedback_stats()
-
-    return jsonify({
-        "total_tenders": total_tenders,
-        "analyzed": analyzed,
-        "sent": sent,
-        "by_source": {row["source"]: row["c"] for row in by_source},
-        "by_verdict": {row["verdict"]: row["c"] for row in by_verdict},
-        "feedback": feedback_stats,
+    db.update_search_settings({
+        "min_budget": min_budget,
+        "x_threshold": x_threshold,
+        "y_threshold": y_threshold,
+        "regions": regions,
     })
+    return redirect(url_for("settings"))
 
+
+# ---------------------------------------------------------------------------
+# Tab 4 — AI assistant
+# ---------------------------------------------------------------------------
+
+@app.route("/chat")
+def chat():
+    return render_template("chat.html")
+
+
+@app.route("/chat/message", methods=["POST"])
+def chat_message():
+    user_msg = (request.json or {}).get("message", "").strip()
+    if not user_msg:
+        return jsonify({"error": "Пустое сообщение"}), 400
+
+    system_prompt = f"""Ты — AI-ассистент для белорусского строительного подрядчика.
+Отвечай на русском языке. Будь конкретен и практичен.
+
+МОЙ ПРАЙС-ЛИСТ:
+{db.get_all_price_items_as_text()}
+
+ПАРАМЕТРЫ ПОИСКА:
+{db.get_search_settings_as_text()}
+
+ПОСЛЕДНИЕ 10 ПОДХОДЯЩИХ ТЕНДЕРОВ:
+{db.get_suitable_tenders_summary()}
+
+СТАТИСТИКА ВОРОНКИ:
+- Всего обработано: {db.count_tenders()}
+- Подходящих найдено: {db.count_suitable()}
+- Отсеяно по ключевым словам (I): {db.count_rejected('failed_I')}
+- Отсеяно по бюджету (B): {db.count_rejected('failed_B')}
+- Отсеяно по региону (R): {db.count_rejected('failed_R')}
+- Отсеяно мало совпадений (K): {db.count_rejected('failed_K')}
+- Отсеяно низкая релевантность (L): {db.count_rejected('failed_L')}
+- Отсеяно низкая маржа (M): {db.count_rejected('failed_M')}
+- Средняя маржа: {db.avg_margin()}%
+"""
+
+    try:
+        msg = _claude.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        reply = "".join(b.text for b in msg.content if b.type == "text")
+    except Exception as e:
+        log.error(f"Chat API error: {e}")
+        reply = "Ошибка при обращении к AI. Попробуйте ещё раз."
+
+    return jsonify({"response": reply})
+
+
+# ---------------------------------------------------------------------------
+# Runner (used by main.py)
+# ---------------------------------------------------------------------------
 
 def run_dashboard():
-    """Запускает Flask-дашборд (блокирующий вызов, для запуска в отдельном потоке)."""
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)

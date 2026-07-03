@@ -1,0 +1,457 @@
+
+
+
+
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="ru-RU">
+<head>
+    
+    
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title> Вход</title>
+    <meta name="csrf-param" content="_csrf">
+<meta name="csrf-token" content="jExoYerf1VZN69Iu_r0o9qFgU_yY1RCXjBgVbhLbSffGeSIKgYyPLASnp2iT4lKzljMlr6GyKKfub1EperkgwA==">
+
+    <link href="/assets/c70f1618/css/bootstrap.css" rel="stylesheet">
+<link href="/css/site.css" rel="stylesheet">
+<link href="/css/jquery.fancybox.min.css" rel="stylesheet">
+<script src="/js/jquery-1.12.4.min.js"></script>
+<script src="/js/jquery.fancybox.min.js"></script>
+<script src="/js/main.js"></script>
+    <script type="text/javascript" src="/js/oldie.js"></script>
+    <script type="text/javascript" src="/js/client.js?ver=0.1.4"></script>
+
+    <!--[if lt IE 9]>
+    <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+    <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+</head>
+<body>
+
+
+
+
+<div class="wrap">
+    
+    <nav id="w0" class="navbar-inverse toogle navbar"><div class="container"><div class="navbar-header"><button type="button" class="navbar-toggle" data-toggle="collapse" data-target="#w0-collapse"><span class="sr-only">Toggle navigation</span>
+<span class="icon-bar"></span>
+<span class="icon-bar"></span>
+<span class="icon-bar"></span></button><a class="navbar-brand" href="/"><img src="/img/logo_ru.svg" class="img-responsive img-logo-header"></a></div><div id="w0-collapse" class="collapse navbar-collapse">
+    <ul id="w1" class="navbar-nav navbar-center navbar-text nav">Электронная торговая площадка</ul>
+
+    <ul id="w2" class="navbar-nav navbar-right navbar-text nav"><div class="cl">
+                <div class="t">
+                    <div id="clock">18 : 42</div>
+                </div>
+                <div class="d" id="date">19 июня 2026</div>
+            </div></ul>
+
+    </div></div></nav>
+
+    
+    
+    
+                        
+    <nav id="w3" class="navbar navbar-default"><div class="container"><div class="navbar-header"><button type="button" class="navbar-toggle" data-toggle="collapse" data-target="#w3-collapse"><span class="sr-only">Toggle navigation</span>
+<span class="icon-bar"></span>
+<span class="icon-bar"></span>
+<span class="icon-bar"></span></button></div><div id="w3-collapse" class="collapse navbar-collapse">
+
+    <ul id="w4" class="navbar-nav navbar-right nav"><li><a href="/">Главная</a></li>
+<li><a href="/news">Новости</a></li>
+<li class="dropdown"><a class="dropdown-toggle" href="#" data-toggle="dropdown">Помощь <span class="caret"></span></a><ul id="w5" class="dropdown-menu"><li><a href="/article/dokumenty" tabindex="-1">Документы</a></li>
+<li role="separator" class="divider"></li>
+<li><a href="/browsertest" tabindex="-1">Проверка браузера</a></li>
+<li><a href="/article/instrukcii" tabindex="-1">Инструкции</a></li>
+<li><a href="/article/pro-zakupki" tabindex="-1">#PROзакупки</a></li>
+<li><a href="/article/pro-zakupki-rf" tabindex="-1">#PROзакупкиРФ</a></li>
+<li><a href="/article/vopros-otvet" tabindex="-1">Вопрос - ответ</a></li>
+<li><a href="/article/training" tabindex="-1">Подготовка к участию</a></li>
+<li><a href="/article/soprovozhdenie-uchastiya" tabindex="-1">Сопровождение участия за рубежом</a></li>
+<li role="separator" class="divider"></li>
+<li><a href="/article/normativnye-pravovye-akty" tabindex="-1">Нормативные правовые акты</a></li>
+<li><a href="/article/programmnoe-obsepechenie" tabindex="-1">Программное обеспечение</a></li>
+<li role="separator" class="divider"></li>
+<li><a href="/registry/accredited-companies" tabindex="-1">Реестр аккредитованных лиц</a></li>
+<li><a href="/registry/calist" tabindex="-1">Реестр авторизованных УЦ</a></li></ul></li>
+<li><a href="https://nepc.by/services/educational-centre/">Обучение</a></li>
+<li><a href="http://ca.ncmps.by/">Получение ЭЦП</a></li>
+<li><a href="/purchases/all">Планы</a></li>
+<li><a href="/tenders/posted">Закупки</a></li>
+<li class="dropdown"><a class="dropdown-toggle" href="#" data-toggle="dropdown">Контакты <span class="caret"></span></a><ul id="w6" class="dropdown-menu"><li><a href="/site/contact" tabindex="-1">Обратная связь</a></li>
+<li><a href="/article/adresa-i-telefony" tabindex="-1">Адреса и телефоны</a></li></ul></li>
+<li class="active"><a href="/site/login"><i class="glyphicon glyphicon-log-in"></i> Войти</a></li>
+<li><a href="/site/signup"> Регистрация</a></li></ul>
+    </div></div></nav>
+
+    <div class="container">
+        <ul class="breadcrumb"><li><a href="/">Главная</a></li>
+<li class="active">Вход</li>
+</ul>
+        
+
+        
+
+
+
+
+<div class="site-login">
+    <h1>Вход</h1>
+    <hr>
+
+    <ul class="nav nav-tabs nav-justified" role="tablist">
+        <li role="presentation" class="active">
+            <a href="#by-password" aria-controls="by-password" role="tab" data-toggle="tab">
+                <i class="glyphicon glyphicon-user"></i>&nbsp;
+                По логину и паролю
+            </a>
+        </li>
+        <li role="presentation">
+            <a id="bycert_tab" href="#by-certificate" aria-controls="by-certificate" role="tab" data-toggle="tab">
+                <i class="glyphicon glyphicon-lock"></i>&nbsp;
+                По сертификату открытого ключа
+            </a>
+        </li>
+    </ul>
+
+    <div class="tab-content" style="padding: 25px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 5px 5px;">
+        <div role="tabpanel" class="tab-pane active" id="by-password">
+            <div class="row">
+    <div class="form col-md-6 col-md-offset-3">
+                    <p>Для входа в личный кабинет заполните следующие поля:</p><hr>
+
+            <form id="login-form" class="form-horizontal" action="/site/login" method="post">
+<input type="hidden" name="_csrf" value="jExoYerf1VZN69Iu_r0o9qFgU_yY1RCXjBgVbhLbSffGeSIKgYyPLASnp2iT4lKzljMlr6GyKKfub1EperkgwA==">
+            <div class="form-group field-loginform-username required">
+<div class="col-lg-2"><label class="control-label" for="loginform-username">Логин</label></div>
+<div class="col-lg-7"><input type="text" id="loginform-username" class="form-control" name="LoginForm[username]" aria-required="true"></div>
+<div class="col-lg-offset-2 col-lg-5 small"><p class="help-block help-block-error "></p></div>
+</div>
+            <div class="form-group field-loginform-password required">
+<div class="col-lg-2"><label class="control-label" for="loginform-password">Пароль</label></div>
+<div class="col-lg-7"><input type="password" id="loginform-password" class="form-control" name="LoginForm[password]" value="" aria-required="true"></div>
+<div class="col-lg-offset-2 col-lg-5 small"><p class="help-block help-block-error "></p></div>
+</div>
+
+            <div class="form-group field-loginform-rememberme">
+<div class="col-lg-offset-2 col-lg-7"><input type="hidden" name="LoginForm[rememberMe]" value="0"><input type="checkbox" id="loginform-rememberme" name="LoginForm[rememberMe]" value="1" checked> <label for="loginform-rememberme">Запомнить меня</label></div>
+<div class="col-lg-offset-2 col-lg-5 small"><p class="help-block help-block-error "></p></div>
+</div>
+            <div class="form-group">
+                <div class="col-lg-offset-2 col-lg-6">
+                    <a href="/site/forgot-password">Забыли пароль?</a>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="col-lg-offset-2 col-lg-6">
+                    <button type="submit" class="btn btn-primary btn-block" name="login-button">Войти</button>
+                </div>
+            </div>
+            </form>
+        
+    </div>
+</div>        </div>
+        <div role="tabpanel" class="tab-pane" id="by-certificate">
+            
+
+<div class="alert alert-warning small">
+    <i class="glyphicon glyphicon-exclamation-sign"></i>
+    При возникновении сложностей со входом по сертификату открытого ключа рекомендуем войти в личный кабинет с помощью 
+    <b>логина и пароля</b>. После входа в личный кабинет рекомендуем проверить сопоставлен ли действующий сертификат с 
+    учетной записью пользователя.
+</div>
+
+<div  class="preload text-center">
+    <img src="/img/load.gif" />
+</div>
+<div id="errors" class="alert alert-danger alert-dismissible" role="alert"></div>
+<div id="message" class="alert alert-success alert-dismissible" role="alert"></div>
+
+
+<div class="row" id="loginByCert-form">
+    <div id="form" class="form col-md-8 col-md-offset-2">
+        <div class="form-group">
+            <label for="certificates">Сертификат</label>
+            <select id="certificates" class="form-control">
+                <option value="0">-Не выбран-</option>
+            </select>
+        </div>
+        <div class="form-group" id="attrCertsBlock">
+            <label for="attrCertsSelect">Атрибутный сертификат</label>
+            <select id="attrCertsSelect" class="form-control">
+                <option value="0">-Не выбран-</option>
+            </select>
+        </div>
+        <div id="remeberMe" class="form-group">
+            <input type="checkbox" id="loginByCert-rememberme" name="rememberMe" value="1" checked>
+            <label for="loginByCert-rememberme">Запомнить меня</label>
+        </div>
+        <hr>
+        <div class="col-lg-offset-3 col-lg-6">
+            <input type="hidden" name="testMessage" id="testMessage" value="EFBBBF74657374696e67206d657373616765">
+            <button class="btn btn-primary btn-block" id="signMessage">Войти</button>
+        </div>
+    </div>
+</div>        </div>
+    </div>
+</div>
+    </div>
+</div>
+
+<footer class="footer">
+    <div class="container">
+
+        <div class="row">
+            <div class="col-md-3">
+                <div class="row"><a href="https://icetrade.by">Icetrade.by</a></div>
+                <div class="row"><a href="https://gias.by">Gias.by</a></div>
+                <div class="row"><a href="https://export.by">Export.by</a></div>
+            </div>
+            <div class="col-md-3">
+                <div class="row">
+                    <div class="row"><a href="https://goszakupki.by/upload/articles/2/reglament.pdf" target="_blank">Регламент</a></div>
+                    <div class="row"><a href="/download/personal_data.pdf" target="_blank">Политика обработки персональных данных</a></div>
+                    <div class="row"><a href="/article/cookie-politics" target="_blank">Политика обработки cookie-файлов</a></div>
+                    <div class="row" id="settings-cookie"><a style="cursor: pointer;">Настроить обработку cookie-файлов</a></div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="row"><a href="http://mfa.gov.by/">Министерство иностранных дел</a></div>
+                <div class="row"><a href="https://mart.gov.by">МАРТ</a></div>
+            </div>
+            <div class="col-md-3">
+                <div class="row"><a href="https://goszakupki.by/">Главная</a></div>
+                <!--div class="row"><a href="https://goszakupki.by/site/about">О компании</a></div-->
+                <div class="row"><a href="https://goszakupki.by/article/adresa-i-telefony">Контакты</a></div>
+            </div>
+        </div>
+
+        <div class="row text-center">
+            <div class="col-md-12">
+                <a href="https://nepc.by">© РЕСПУБЛИКАНСКОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ «НАЦИОНАЛЬНЫЙ ЦЕНТР ПОДДЕРЖКИ ЭКСПОРТА», 2011 - 2026 </a>
+            </div>
+        </div>
+
+    </div>
+
+</footer>
+<script src="/js/site/login.js"></script>
+<script src="/assets/621ce3e9/yii.js"></script>
+<script src="/assets/621ce3e9/yii.validation.js"></script>
+<script src="/assets/621ce3e9/yii.activeForm.js"></script>
+<script src="/assets/c70f1618/js/bootstrap.js"></script>
+<script>jQuery(function ($) {
+jQuery('#login-form').yiiActiveForm([{"id":"loginform-username","name":"username","container":".field-loginform-username","input":"#loginform-username","error":".help-block.help-block-error","validate":function (attribute, value, messages, deferred, $form) {yii.validation.required(value, messages, {"message":"Необходимо заполнить «Логин»."});}},{"id":"loginform-password","name":"password","container":".field-loginform-password","input":"#loginform-password","error":".help-block.help-block-error","validate":function (attribute, value, messages, deferred, $form) {yii.validation.required(value, messages, {"message":"Необходимо заполнить «Пароль»."});}},{"id":"loginform-rememberme","name":"rememberMe","container":".field-loginform-rememberme","input":"#loginform-rememberme","error":".help-block.help-block-error","validate":function (attribute, value, messages, deferred, $form) {yii.validation.boolean(value, messages, {"trueValue":"1","falseValue":"0","message":"Значение «Запомнить меня» должно быть равно «1» или «0».","skipOnEmpty":1});}}], []);
+});</script>
+
+<style>
+    .cookie-banner {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: flex-start;
+        position: fixed;
+        bottom: 0;
+        width: 100%;
+        color: #fff;
+        text-align: left;
+        z-index: 100000;
+        background: rgba(0, 0, 0, .75);
+        padding: 1rem;
+        box-sizing: border-box;
+    }
+
+    .cookie-banner a {
+        color: #fff;
+    }
+
+    .cookie-banner > div {
+        margin: 0.5rem 1rem;
+    }
+
+    .buttons {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-top: 10px;
+    }
+
+    .cookie-button {
+        cursor: pointer;
+        padding: 8px 16px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background-color: #337ab7;
+        border: 1px solid #2e6da4;
+        color: #fff;
+        text-align: center;
+        border-radius: 3px;
+        font-size: 14px;
+        min-height: 44px;
+        box-sizing: border-box;
+    }
+
+    #reject-all {
+        background-color: #337ab7;
+        border-color: #2e6da4;
+        color: #fff;
+    }
+
+    .cookie-link-doc {
+        color: #fff;
+        text-decoration: underline;
+        font-size: 14px;
+        margin-top: 8px;
+    }
+
+    .cookie-settings-form {
+        display: none;
+        width: 100%;
+        max-width: 800px;
+        margin-top: 1rem;
+    }
+
+    .cookie-settings-form label {
+        display: inline-block;
+        margin-right: 1rem;
+        font-size: 14px;
+    }
+
+    .cookie-settings-form input[type="checkbox"] {
+        margin-right: 5px;
+    }
+
+</style>
+
+
+
+<div class="cookie-container" id="cookieConsentBanner" >
+
+    <div class="cookie-banner" id="main-form">
+        <div>
+            <p>Для обеспечения удобства пользователей данный сайт использует файлы cookie</p>
+            <div class="cookie-link-doc">
+                <a href="/article/cookie-politics">Политика в отношении обработки cookie-файлов на сайте</a>
+            </div>
+        </div>
+        <div class="buttons">
+            <div class="cookie-button" id="accept-all">ПРИНЯТЬ ВСЕ</div>
+            <div class="cookie-button" id="reject-all">ОТКЛОНИТЬ ВСЕ</div>
+            <div class="cookie-button" id="show-settings" style="background:#5bc0de">НАСТРОИТЬ</div>
+        </div>
+    </div>
+
+    <div class="cookie-banner" id="settings-form" style="display:none;">
+        <div>
+            <p>Вы можете настроить, какие типы файлов cookie будут сохраняться на вашем устройстве.</p>
+            <div class="cookie-settings-form" id="cookie-settings-form">
+                <label>
+                    <input type="checkbox" id="cookie-technical" disabled checked> Необходимые (технические)
+                </label>
+                <label>
+                    <input type="checkbox" id="cookie-functional" checked> Функциональные
+                </label>
+                <label>
+                    <input type="checkbox" id="cookie-analytical" checked> Аналитические
+                </label>
+            </div>
+        </div>
+        <div class="buttons">
+            <div class="cookie-button" id="save-settings">СОХРАНИТЬ</div>
+            <div class="cookie-button" id="close-settings" style="background:#aaa">ЗАКРЫТЬ</div>
+        </div>
+    </div>
+</div>
+
+
+<script>
+    (function () {
+
+        const banner = $('#cookieConsentBanner');
+        const mainForm = $('#main-form');
+        const settingsForm = $('#settings-form');
+        const settingsFormCheckboxes = $('#cookie-settings-form');
+
+        function saveConsent(consent, functional, analytical) {
+            $.ajax({
+                url: '/site/cookie-agreement',
+                type: 'POST',
+                data: {
+                    consent: consent ? '1' : '0',
+                    functional: functional ? '1' : '0',
+                    analytical: analytical ? '1' : '0'
+                },
+                success: function () {
+                    banner.hide();
+                },
+                error: function (xhr, status, error) {
+                    console.error('Ошибка сохранения согласия:', error);
+                    banner.hide();
+                }
+            });
+        }
+
+        $('#accept-all').click(function (){
+            saveConsent(true, true, true);
+        })
+
+        $('#reject-all').click(function () {
+            saveConsent(false, false, false);
+        })
+
+        $('#show-settings').click(function (){
+            mainForm.hide();
+            settingsForm.show();
+            settingsFormCheckboxes.show();
+        })
+
+        $('#settings-cookie').click(function (){
+            banner.show();
+            mainForm.hide();
+            settingsForm.show();
+            settingsFormCheckboxes.show();
+        })
+
+        $('#close-settings').click(function (){
+            settingsForm.hide();
+            settingsFormCheckboxes.hide();
+            const hasConsent = Cookie.Read('cookie_consent');
+            if (!hasConsent) {
+                mainForm.show();
+            }
+        })
+
+        $('#save-settings').click(function (){
+            const functional = $('#cookie-functional').is(':checked');
+            const analytical = $('#cookie-analytical').is(':checked');
+            const consent = true;
+            saveConsent(consent, functional, analytical);
+        })
+    })();
+</script>
+<script type="text/javascript">
+    $('[data-toggle="tooltip"]').tooltip();
+    var clockTime=1781883735000;
+    function clock(){
+        var d=new Date(clockTime);
+        var h=d.getUTCHours()+3; var m=d.getMinutes();
+        if (h>=24) h-=24;
+        $('#clock').html((h<10?'0':'')+h+' : '+(m<10?'0':'')+d.getMinutes());
+        $('#date').html(d.getDate()+' '+monthes.ru[d.getMonth()]+' '+d.getFullYear());
+        clockTime+=1000;
+    }
+    setInterval("clock()",1000);
+
+</script>
+
+</body>
+</html>
