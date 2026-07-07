@@ -5,6 +5,7 @@ No scraper, no APScheduler.
 
 import base64
 import os
+import threading
 from pathlib import Path
 
 from flask import jsonify, request
@@ -135,9 +136,10 @@ def main():
         return
     db.init_db()
     log.info("Database ready")
-    _init_price_list_from_smeta()
     port = int(os.environ.get('PORT', 5000))
     log.info(f"Dashboard starting on http://0.0.0.0:{port}")
+    # Start smeta init in background AFTER Flask is ready
+    threading.Thread(target=_init_price_list_from_smeta, daemon=True).start()
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
