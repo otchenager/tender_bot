@@ -189,7 +189,17 @@ def _step1_extract(text: str, images: list[str]) -> dict | None:
     prompt = _EXTRACT_PROMPT + (text if text else "(см. изображение)")
 
     def attempt():
-        raw = _call_claude(prompt, images_b64=images if not text else None)
+        try:
+            raw = _call_claude(prompt, images_b64=images if not text else None)
+        except Exception as e:
+            log.error(f"Step1 API call failed: {type(e).__name__}: {str(e)}")
+            if hasattr(e, "status_code"):
+                log.error(f"Status code: {e.status_code}")
+            if hasattr(e, "response"):
+                log.error(f"Response: {e.response}")
+            if hasattr(e, "body"):
+                log.error(f"Body: {e.body}")
+            return None
         return _parse_json_response(raw)
 
     data = attempt()
