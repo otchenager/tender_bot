@@ -4,6 +4,15 @@
 
 {% block content %}
 
+{% if rescore_stats %}
+<div class="alert alert-success" style="font-size:.92rem;">
+  ✅ Параметры сохранены. Существующие тендеры пересчитаны под новые условия:
+  подходящих — {{ rescore_stats.suitable }},
+  отклонено — {{ rescore_stats.rejected }},
+  в архиве — {{ rescore_stats.archived }}.
+</div>
+{% endif %}
+
 <div class="row g-4">
 
   <!-- Left: form -->

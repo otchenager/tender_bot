@@ -227,6 +227,37 @@ def get_last_external_id(source: str) -> str | None:
         return row[0] if row else None
 
 
+# Rejection reasons that a settings change can overturn — everything the
+# Python filters/formula decided. ai_error records are NOT rescorable (the
+# analysis itself failed, there are no stored positions to re-score).
+_RESCORABLE_REASONS = ("failed_B", "failed_R", "failed_K", "failed_L", "failed_M")
+
+
+def get_rescorable_tenders() -> list[dict]:
+    """Tenders whose status was decided by the search formula and therefore
+    must be recomputed when the user changes parameters."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("""
+            SELECT * FROM tenders
+            WHERE status = 'suitable'
+               OR (status = 'rejected' AND reject_reason IN %s)
+        """, (_RESCORABLE_REASONS,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def archive_tender(tender_id: int, marker: str):
+    """Park a tender that can't be re-scored under new settings; the marker
+    (e.g. 'результаты до изменения от 11.07.2026') is shown instead of mixing
+    old-criteria results with new ones."""
+    with _conn() as conn:
+        conn.cursor().execute("""
+            UPDATE tenders
+            SET status = 'archived', reject_reason = %s, updated_at = NOW()
+            WHERE id = %s
+        """, (marker, tender_id))
+
+
 def get_suitable_tenders(limit: int = 200) -> list[dict]:
     with _conn() as conn:
         cur = _dict_cursor(conn)
@@ -475,10 +506,16 @@ def get_search_settings() -> dict:
         "x_threshold": float(rows.get("x_threshold", 30)),
         "y_threshold": float(rows.get("y_threshold", 5)),
         "regions": json.loads(rows.get("regions", '["Минская","г. Минск"]')),
+        # When the parameters were last changed (ISO); None until first save.
+        # The dashboard shows results as "актуально на {this date}".
+        "params_updated_at": rows.get("params_updated_at"),
     }
 
 
 def update_search_settings(settings: dict):
+    # Every save stamps the change moment so the dashboard can state which
+    # parameter version the displayed results were computed under.
+    settings = {**settings, "params_updated_at": _now()}
     with _conn() as conn:
         cur = conn.cursor()
         for key, value in settings.items():

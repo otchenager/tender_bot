@@ -6,6 +6,7 @@ import anthropic
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 import db
+import file_processor
 from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 from logger import get_logger
 
@@ -44,6 +45,19 @@ def fmt_pct(value):
         return str(value)
 
 
+@app.template_filter("fmt_date")
+def fmt_date(value):
+    """ISO timestamp → dd.mm.yyyy HH:MM (human-readable, local wording)."""
+    if not value:
+        return "—"
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(value))
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except (TypeError, ValueError):
+        return str(value)[:16]
+
+
 # ---------------------------------------------------------------------------
 # Tab 1 — Suitable tenders
 # ---------------------------------------------------------------------------
@@ -52,7 +66,13 @@ def fmt_pct(value):
 def index():
     tenders = db.get_suitable_tenders()
     rejected = db.get_rejected_counts(hours=24)
-    return render_template("index.html", tenders=tenders, rejected=rejected)
+    params_updated_at = db.get_search_settings().get("params_updated_at")
+    return render_template(
+        "index.html",
+        tenders=tenders,
+        rejected=rejected,
+        params_updated_at=params_updated_at,
+    )
 
 
 @app.route("/tender/<int:tender_id>")
@@ -131,7 +151,18 @@ def prices_add():
 @app.route("/settings")
 def settings():
     s = db.get_search_settings()
-    return render_template("settings.html", settings=s, all_regions=ALL_REGIONS)
+    # Rescore stats after a save (redirect carries them as query params)
+    rescore_stats = None
+    if request.args.get("saved"):
+        rescore_stats = {
+            "suitable": request.args.get("suitable", "0"),
+            "rejected": request.args.get("rejected", "0"),
+            "archived": request.args.get("archived", "0"),
+        }
+    return render_template(
+        "settings.html", settings=s, all_regions=ALL_REGIONS,
+        rescore_stats=rescore_stats,
+    )
 
 
 @app.route("/settings/save", methods=["POST"])
@@ -156,7 +187,17 @@ def settings_save():
         "y_threshold": y_threshold,
         "regions": regions,
     })
-    return redirect(url_for("settings"))
+
+    # Correctness over speed: results computed under the OLD parameters must
+    # not linger. Re-score every formula-decided tender under the new
+    # settings right away — Python-only (stored confidences), no Claude.
+    try:
+        stats = file_processor.rescore_existing_tenders()
+    except Exception as e:
+        log.error(f"Rescore after settings save failed: {e}")
+        stats = {"suitable": 0, "rejected": 0, "archived": 0}
+
+    return redirect(url_for("settings", saved=1, **stats))
 
 
 # ---------------------------------------------------------------------------

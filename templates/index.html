@@ -12,6 +12,11 @@
     <span style="font-weight:400; color:#888; font-size:.85rem; margin-left:.5rem;">
       ({{ tenders|length }})
     </span>
+    {% if params_updated_at %}
+    <span style="float:right; font-weight:400; color:#888; font-size:.82rem;">
+      актуально на {{ params_updated_at | fmt_date }} (последнее изменение параметров)
+    </span>
+    {% endif %}
   </div>
   <table class="table table-hover mb-0 align-middle">
     <thead class="table-light">

@@ -12,6 +12,7 @@ import io
 import json
 import re
 import time
+from datetime import datetime
 
 import anthropic
 import requests
@@ -297,6 +298,68 @@ def _step2_match(positions: list[dict], price_items: list[dict]) -> list[dict] |
 # Step 3: Python calculates K, L, M, S (never Claude)
 # ---------------------------------------------------------------------------
 
+# Formula constants shared by first-time scoring and post-settings-change
+# rescoring. K_MIN is the hardcoded "at least 30% of our price list matched"
+# floor; CONFIDENCE_FLOOR separates real matches (green/yellow) from grey.
+K_MIN = 0.30
+CONFIDENCE_FLOOR = 0.40
+
+
+def compute_scores_from_merged(merged: list[dict], total_budget: float,
+                               settings: dict, active_count: int) -> dict:
+    """K/L/M/S over already-matched position rows (Iron rule: Python only,
+    never Claude). Rows need smeta_total_cost / confidence / match_status /
+    margin_byn — exactly what tender_positions stores, so the same function
+    re-scores existing tenders after the user changes X/Y without any new
+    Claude call.
+
+    Returns {"fail": reason} or the four scores."""
+    if total_budget <= 0:
+        total_budget = sum((p.get("smeta_total_cost") or 0) for p in merged) or 1
+
+    # K — matched positions / total active price items
+    matched_count = sum(
+        1 for p in merged if (p.get("confidence") or 0) >= CONFIDENCE_FLOOR
+    )
+    k_score = matched_count / active_count if active_count else 0.0
+
+    if k_score < K_MIN:
+        return {"fail": "failed_K"}
+
+    # L — weighted relevance
+    l_numerator = sum(
+        (p.get("smeta_total_cost") or 0) * (p.get("confidence") or 0)
+        for p in merged if (p.get("confidence") or 0) >= CONFIDENCE_FLOOR
+    )
+    l_score = l_numerator / total_budget
+
+    x_threshold = float(settings.get("x_threshold", 30)) / 100
+    if l_score < x_threshold:
+        return {"fail": "failed_L"}
+
+    # M — margin (only green positions)
+    margin_sum = sum(
+        p["margin_byn"]
+        for p in merged
+        if p.get("match_status") == "green" and p.get("margin_byn") is not None
+    )
+    m_score = margin_sum / total_budget
+
+    y_threshold = float(settings.get("y_threshold", 5)) / 100
+    if m_score < y_threshold:
+        return {"fail": "failed_M"}
+
+    # S — final score
+    s_score = m_score * 0.5 + l_score * 0.3 + k_score * 0.2
+
+    return {
+        "k_score": k_score,
+        "l_score": l_score,
+        "m_score": m_score,
+        "s_score": s_score,
+    }
+
+
 def _step3_scores(positions: list[dict], matches: list[dict],
                   total_budget: float, settings: dict) -> dict | None:
     """Returns dict with scores and merged position data, or None if filter fails."""
@@ -341,49 +404,9 @@ def _step3_scores(positions: list[dict], matches: list[dict],
             "margin_byn": margin_byn,
         })
 
-    if total_budget <= 0:
-        total_budget = sum(p["smeta_total_cost"] for p in merged) or 1
-
-    # K — matched positions / total active price items
-    matched_count = sum(1 for p in merged if p["confidence"] >= 0.40)
-    k_score = matched_count / len(active_items)
-
-    if k_score < 0.30:
-        return {"fail": "failed_K", "merged": merged}
-
-    # L — weighted relevance
-    l_numerator = sum(
-        p["smeta_total_cost"] * p["confidence"]
-        for p in merged if p["confidence"] >= 0.40
-    )
-    l_score = l_numerator / total_budget
-
-    x_threshold = float(settings.get("x_threshold", 30)) / 100
-    if l_score < x_threshold:
-        return {"fail": "failed_L", "merged": merged}
-
-    # M — margin (only green positions)
-    margin_sum = sum(
-        p["margin_byn"]
-        for p in merged
-        if p["match_status"] == "green" and p["margin_byn"] is not None
-    )
-    m_score = margin_sum / total_budget
-
-    y_threshold = float(settings.get("y_threshold", 5)) / 100
-    if m_score < y_threshold:
-        return {"fail": "failed_M", "merged": merged}
-
-    # S — final score
-    s_score = m_score * 0.5 + l_score * 0.3 + k_score * 0.2
-
-    return {
-        "merged": merged,
-        "k_score": k_score,
-        "l_score": l_score,
-        "m_score": m_score,
-        "s_score": s_score,
-    }
+    result = compute_scores_from_merged(merged, total_budget, settings, len(active_items))
+    result["merged"] = merged
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +543,62 @@ def analyze_tender(tender_id: int, documents: list[tuple[str, bytes]]):
     )
 
     notifier.send_email(tender_id)
+
+
+# ---------------------------------------------------------------------------
+# Rescore after settings change (Python only, no Claude)
+# ---------------------------------------------------------------------------
+
+def rescore_existing_tenders() -> dict:
+    """Re-apply the CURRENT search settings to already-analyzed tenders.
+
+    Called when the user saves new parameters so old results never linger
+    under stale criteria. No Claude involved: confidence/match_status/
+    margin_byn are already stored per tender_positions row, so only the
+    Python filters (B/R) and scoring (K/L/M/S) are re-run. Tenders that
+    cannot be re-scored (no stored positions) are archived with an explicit
+    marker instead of silently keeping statuses computed under old criteria.
+    """
+    settings = db.get_search_settings()
+    active_count = len(db.get_active_price_items())
+    marker = f"результаты до изменения от {datetime.now().strftime('%d.%m.%Y')}"
+    stats = {"suitable": 0, "rejected": 0, "archived": 0}
+
+    for t in db.get_rescorable_tenders():
+        tid = t["id"]
+        positions = db.get_tender_positions(tid)
+        if not positions:
+            db.archive_tender(tid, marker)
+            stats["archived"] += 1
+            continue
+
+        # Re-check the coarse budget/region filters first (mirrors the
+        # VPS-side filters B/R — those only ran under the OLD settings).
+        budget = t.get("budget_byn") or 0
+        fail = None
+        result = None
+        if budget < float(settings.get("min_budget") or 0):
+            fail = "failed_B"
+        elif settings.get("regions") and t.get("region") not in settings["regions"]:
+            fail = "failed_R"
+        else:
+            result = compute_scores_from_merged(positions, budget, settings, active_count)
+            fail = result.get("fail")
+
+        if fail:
+            db.reject_tender(tid, fail)
+            stats["rejected"] += 1
+        else:
+            db.update_tender_scores(
+                tid,
+                result["k_score"], result["l_score"],
+                result["m_score"], result["s_score"],
+            )
+            db.update_tender_status(tid, "suitable")
+            stats["suitable"] += 1
+
+    log.info(f"Rescore after settings change: {stats}")
+    return stats
 
 
 # ---------------------------------------------------------------------------
