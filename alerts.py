@@ -58,14 +58,19 @@ def send_alert(key: str, subject: str, body: str) -> bool:
 # CAPTCHA detection (used by both scrapers)
 # ---------------------------------------------------------------------------
 
-# Strong markers appear only on challenge pages; the generic "captcha" word
-# alone is trusted only on tiny pages (challenge screens are small, real
-# listing/detail pages are tens of KB and may mention captcha in a login
-# widget) — this distinguishes "site served a CAPTCHA" from "page empty".
-_STRONG_MARKERS = (
-    "g-recaptcha", "hcaptcha", "smartcaptcha", "ddos-guard",
-    "checking your browser", "подтвердите, что вы не робот",
-    "проверка браузера", "cf-challenge",
+# Challenge-service markers appear only on anti-bot interstitials
+# (Cloudflare / DDoS-Guard) — safe to trust at any page size.
+_CHALLENGE_MARKERS = ("checking your browser", "ddos-guard", "cf-challenge")
+
+# Widget/text markers also appear legitimately inside login forms and even
+# site chrome (goszakupki's menu has a "Проверка браузера" link on EVERY
+# page — verified live 2026-07-11), so they only count when the captcha
+# essentially IS the page: challenge screens are tiny, real listing/detail
+# pages are tens of KB. This distinguishes "site served a CAPTCHA" from
+# both "page empty" and "normal page that merely mentions captcha".
+_WIDGET_MARKERS = (
+    "g-recaptcha", "hcaptcha", "smartcaptcha", "captcha",
+    "подтвердите, что вы не робот",
 )
 
 
@@ -73,9 +78,9 @@ def looks_like_captcha(html: str | None) -> bool:
     if not html:
         return False
     low = html.lower()
-    if any(m in low for m in _STRONG_MARKERS):
+    if any(m in low for m in _CHALLENGE_MARKERS):
         return True
-    return "captcha" in low and len(html) < 5000
+    return len(html) < 5000 and any(m in low for m in _WIDGET_MARKERS)
 
 
 def alert_captcha(source: str, url: str):
