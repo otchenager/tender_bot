@@ -21,6 +21,16 @@ app = Flask(__name__)
 def _rate_guard():
     return global_rate_limit()
 
+
+# Bumped when a deploy must be externally detectable (Railway gives no
+# other cheap signal that the new build is serving).
+APP_REV = "2026-07-11.2"
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True, "rev": APP_REV})
+
 _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=2)
 
 ALL_REGIONS = [
