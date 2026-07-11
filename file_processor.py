@@ -601,6 +601,29 @@ def rescore_existing_tenders() -> dict:
     return stats
 
 
+def preview_pass_counts(trial_settings: dict) -> dict:
+    """Dry-run twin of rescore_existing_tenders: how many stored tenders
+    would be suitable under TRIAL settings. Read-only, no Claude, nothing
+    is written — feeds the live preview on the settings page."""
+    active_count = len(db.get_active_price_items())
+    total = 0
+    passing = 0
+    for t in db.get_rescorable_tenders():
+        positions = db.get_tender_positions(t["id"])
+        if not positions:
+            continue
+        total += 1
+        budget = t.get("budget_byn") or 0
+        if budget < float(trial_settings.get("min_budget") or 0):
+            continue
+        if trial_settings.get("regions") and t.get("region") not in trial_settings["regions"]:
+            continue
+        result = compute_scores_from_merged(positions, budget, trial_settings, active_count)
+        if "fail" not in result:
+            passing += 1
+    return {"total": total, "passing": passing}
+
+
 # ---------------------------------------------------------------------------
 # Document downloader (used by parser)
 # ---------------------------------------------------------------------------

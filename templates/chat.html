@@ -4,11 +4,13 @@
 
 {% block content %}
 
-<div style="max-width:760px; margin:0 auto;">
-  <h5 class="mb-1">AI-ассистент</h5>
-  <div class="text-muted mb-3" style="font-size:.85rem;">
-    Задавайте вопросы о тендерах, прайс-листе, формуле или стратегии участия.
-    Контекст подгружается автоматически.
+<div style="max-width:780px; margin:0 auto;">
+  <div class="d-flex align-items-center gap-2 mb-1">
+    <h4 class="mb-0">AI-ассистент</h4>
+    <span class="pill pill-green" style="font-size:.72rem;">online</span>
+  </div>
+  <div style="color:var(--muted); font-size:.86rem; margin-bottom:1rem;">
+    Знает ваш прайс-лист, параметры поиска и историю тендеров — контекст подгружается автоматически.
   </div>
 
   <div id="chat-box" class="mb-3">
@@ -20,11 +22,28 @@
     </div>
   </div>
 
-  <div class="d-flex gap-2">
+  <div class="d-flex gap-2 mb-2">
     <input id="chat-input" type="text" class="form-control"
+           style="border-radius:12px; padding:.65rem 1rem; border-color:var(--border);"
            placeholder="Например: почему так мало подходящих тендеров?"
            onkeydown="if(event.key==='Enter'){sendMessage()}">
-    <button class="btn btn-dark px-4" onclick="sendMessage()">Отправить</button>
+    <button class="btn btn-dark px-4" style="border-radius:12px;" id="send-btn" onclick="sendMessage()">
+      Отправить
+    </button>
+  </div>
+
+  <div class="d-flex flex-wrap gap-2">
+    {% for hint in [
+      'Почему так мало подходящих тендеров?',
+      'Какие позиции чаще всего не находят совпадения?',
+      'Стоит ли снизить порог маржи?',
+    ] %}
+    <button class="btn btn-sm" onclick="quickAsk(this.textContent.trim())"
+            style="border:1px solid var(--border); border-radius:999px; color:var(--ink-2);
+                   font-size:.8rem; background:var(--surface);">
+      {{ hint }}
+    </button>
+    {% endfor %}
   </div>
 </div>
 
@@ -34,30 +53,59 @@
 <script>
 const chatBox = document.getElementById('chat-box');
 const chatInput = document.getElementById('chat-input');
+const sendBtn = document.getElementById('send-btn');
 
-function appendMsg(text, role) {
+function makeMsg(role) {
   const div = document.createElement('div');
   div.className = role === 'user' ? 'msg-user' : 'msg-bot';
   const bubble = document.createElement('div');
   bubble.className = `bubble ${role === 'user' ? 'bubble-user' : 'bubble-bot'}`;
   bubble.style.whiteSpace = 'pre-wrap';
-  bubble.textContent = text;
   div.appendChild(bubble);
   chatBox.appendChild(div);
   chatBox.scrollTop = chatBox.scrollHeight;
+  return bubble;
+}
+
+function appendMsg(text, role) {
+  makeMsg(role).textContent = text;
+  chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+// Typewriter reveal: the reply appears progressively instead of popping in.
+function typeOut(bubble, text) {
+  let i = 0;
+  const step = Math.max(1, Math.round(text.length / 120)); // ~120 кадров на любой ответ
+  const timer = setInterval(() => {
+    i = Math.min(text.length, i + step);
+    bubble.textContent = text.slice(0, i);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    if (i >= text.length) clearInterval(timer);
+  }, 16);
+}
+
+function showTyping() {
+  const div = document.createElement('div');
+  div.className = 'msg-bot';
+  div.innerHTML = '<div class="bubble bubble-bot"><span class="typing-dots"><i></i><i></i><i></i></span></div>';
+  chatBox.appendChild(div);
+  chatBox.scrollTop = chatBox.scrollHeight;
+  return div;
+}
+
+function quickAsk(text) {
+  chatInput.value = text;
+  sendMessage();
 }
 
 async function sendMessage() {
   const msg = chatInput.value.trim();
-  if (!msg) return;
+  if (!msg || sendBtn.disabled) return;
   chatInput.value = '';
   appendMsg(msg, 'user');
 
-  const thinking = document.createElement('div');
-  thinking.className = 'msg-bot';
-  thinking.innerHTML = '<div class="bubble bubble-bot" style="color:#aaa;">⏳ Думаю...</div>';
-  chatBox.appendChild(thinking);
-  chatBox.scrollTop = chatBox.scrollHeight;
+  sendBtn.disabled = true;
+  const typing = showTyping();
 
   try {
     const resp = await fetch('/chat/message', {
@@ -66,11 +114,14 @@ async function sendMessage() {
       body: JSON.stringify({message: msg}),
     });
     const data = await resp.json();
-    chatBox.removeChild(thinking);
-    appendMsg(data.response || data.error || 'Ошибка', 'bot');
+    chatBox.removeChild(typing);
+    typeOut(makeMsg('bot'), data.response || data.error || 'Ошибка');
   } catch (e) {
-    chatBox.removeChild(thinking);
+    chatBox.removeChild(typing);
     appendMsg('Ошибка соединения', 'bot');
+  } finally {
+    sendBtn.disabled = false;
+    chatInput.focus();
   }
 }
 </script>

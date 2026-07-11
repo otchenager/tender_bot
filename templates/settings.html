@@ -5,87 +5,116 @@
 {% block content %}
 
 {% if rescore_stats %}
-<div class="alert alert-success" style="font-size:.92rem;">
-  ✅ Параметры сохранены. Существующие тендеры пересчитаны под новые условия:
-  подходящих — {{ rescore_stats.suitable }},
-  отклонено — {{ rescore_stats.rejected }},
-  в архиве — {{ rescore_stats.archived }}.
+<div class="card p-3 mb-4" style="border-left:4px solid var(--good); display:flex; gap:.75rem;
+            flex-direction:row; align-items:center; font-size:.92rem;">
+  <span style="font-size:1.2rem;">✅</span>
+  <div>
+    <strong>Параметры сохранены.</strong> Существующие тендеры пересчитаны под новые условия:
+    подходящих — <strong>{{ rescore_stats.suitable }}</strong>,
+    отклонено — <strong>{{ rescore_stats.rejected }}</strong>,
+    в архиве — <strong>{{ rescore_stats.archived }}</strong>.
+  </div>
 </div>
 {% endif %}
 
 <div class="row g-4">
 
   <!-- Left: form -->
-  <div class="col-md-5">
+  <div class="col-lg-5">
     <div class="card p-4">
-      <h5 class="mb-3">Параметры поиска</h5>
-      <form method="post" action="/settings/save">
+      <h5 class="mb-1">Параметры поиска</h5>
+      <div style="font-size:.84rem; color:var(--muted); margin-bottom:1.4rem;">
+        Изменения вступают в силу немедленно — все найденные тендеры будут пересчитаны.
+      </div>
+
+      <form method="post" action="/settings/save" id="settings-form">
 
         <div class="mb-4">
-          <label class="form-label fw-600">📍 Регионы</label>
+          <div class="section-label mb-2">Регионы</div>
           <div class="d-flex flex-wrap gap-2">
             {% for region in all_regions %}
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" name="regions"
-                     value="{{ region }}" id="r_{{ loop.index }}"
-                     {{ 'checked' if region in settings.regions else '' }}>
-              <label class="form-check-label" for="r_{{ loop.index }}">{{ region }}</label>
-            </div>
+            <label class="region-chip">
+              <input type="checkbox" name="regions" value="{{ region }}"
+                     {{ 'checked' if region in settings.regions else '' }}
+                     onchange="schedulePreview()">
+              <span>{{ region }}</span>
+            </label>
             {% endfor %}
           </div>
         </div>
 
-        <div class="mb-3">
-          <label class="form-label fw-600">💰 Минимальный бюджет B</label>
-          <div class="input-group" style="max-width:220px;">
-            <input type="number" name="min_budget" class="form-control"
-                   value="{{ settings.min_budget | int }}" min="0" step="1000">
-            <span class="input-group-text">BYN</span>
+        <div class="mb-4">
+          <div class="d-flex justify-content-between align-items-baseline mb-1">
+            <div class="section-label">Минимальный бюджет B</div>
+            <div style="font-weight:700; font-variant-numeric:tabular-nums;">
+              <span id="budget-out">{{ settings.min_budget | int }}</span> BYN
+            </div>
           </div>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label fw-600">📊 Порог релевантности X</label>
-          <div class="input-group" style="max-width:160px;">
-            <input type="number" name="x_threshold" class="form-control"
-                   value="{{ settings.x_threshold | int }}" min="0" max="100">
-            <span class="input-group-text">%</span>
+          <input type="range" class="slider" id="budget-range" min="0" max="200000" step="1000"
+                 value="{{ settings.min_budget | int }}"
+                 oninput="syncSlider(this, 'min_budget', 'budget-out'); schedulePreview()">
+          <input type="hidden" name="min_budget" id="min_budget" value="{{ settings.min_budget | int }}">
+          <div style="font-size:.78rem; color:var(--muted); margin-top:.3rem;">
+            Тендеры дешевле не анализируются — отсекает мелкие закупки
           </div>
         </div>
 
         <div class="mb-4">
-          <label class="form-label fw-600">📈 Минимальная маржа Y</label>
-          <div class="input-group" style="max-width:160px;">
-            <input type="number" name="y_threshold" class="form-control"
-                   value="{{ settings.y_threshold | int }}" min="0" max="100">
-            <span class="input-group-text">%</span>
+          <div class="d-flex justify-content-between align-items-baseline mb-1">
+            <div class="section-label">Порог релевантности X</div>
+            <div style="font-weight:700;"><span id="x-out">{{ settings.x_threshold | int }}</span>%</div>
+          </div>
+          <input type="range" class="slider" id="x-range" min="0" max="100" step="1"
+                 value="{{ settings.x_threshold | int }}"
+                 oninput="syncSlider(this, 'x_threshold', 'x-out'); schedulePreview()">
+          <input type="hidden" name="x_threshold" id="x_threshold" value="{{ settings.x_threshold | int }}">
+          <div style="font-size:.78rem; color:var(--muted); margin-top:.3rem;">
+            Наши работы должны покрывать не менее X% стоимости тендера
           </div>
         </div>
 
-        <button type="submit" class="btn btn-dark px-4">Сохранить</button>
-        <div class="text-muted mt-2" style="font-size:.82rem;">
-          Изменения вступают в силу немедленно, без перезапуска.
+        <div class="mb-4">
+          <div class="d-flex justify-content-between align-items-baseline mb-1">
+            <div class="section-label">Минимальная маржа Y</div>
+            <div style="font-weight:700;"><span id="y-out">{{ settings.y_threshold | int }}</span>%</div>
+          </div>
+          <input type="range" class="slider" id="y-range" min="0" max="50" step="1"
+                 value="{{ settings.y_threshold | int }}"
+                 oninput="syncSlider(this, 'y_threshold', 'y-out'); schedulePreview()">
+          <input type="hidden" name="y_threshold" id="y_threshold" value="{{ settings.y_threshold | int }}">
+          <div style="font-size:.78rem; color:var(--muted); margin-top:.3rem;">
+            Ожидаемая прибыль относительно бюджета тендера
+          </div>
         </div>
+
+        <!-- Live preview -->
+        <div class="p-3 mb-4" style="background:var(--bg); border-radius:10px; border:1px solid var(--border);">
+          <div class="d-flex align-items-center gap-2">
+            <span style="font-size:1.1rem;">🔎</span>
+            <div id="preview-line" style="font-size:.9rem; color:var(--ink-2);">
+              Двигайте ползунки — покажем, сколько из уже найденных тендеров прошло бы
+            </div>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-dark px-4 w-100">Сохранить и пересчитать</button>
       </form>
     </div>
   </div>
 
-  <!-- Right: formula explanation -->
-  <div class="col-md-7">
+  <!-- Right: formula explanation (always visible) -->
+  <div class="col-lg-7">
     <div class="card p-4">
-      <h6 class="mb-3" style="color:#555; text-transform:uppercase;
-                               letter-spacing:.05em; font-size:.78rem;">
-        Как работает формула
-      </h6>
+      <div class="section-label mb-3">Как работает формула</div>
 
       {% macro step(num, label, desc) %}
       <div class="mb-3 d-flex gap-3">
-        <div style="min-width:34px; height:34px; background:#f1f5f9; border-radius:6px;
+        <div style="min-width:36px; height:36px; background:var(--neutral-bg); border-radius:9px;
                     display:flex; align-items:center; justify-content:center;
-                    font-weight:700; color:#1a1a1a; font-size:.9rem;">{{ num }}</div>
+                    font-weight:800; color:var(--ink); font-size:.92rem;">{{ num }}</div>
         <div>
           <div style="font-weight:600; font-size:.95rem;">{{ label }}</div>
-          <div style="font-size:.85rem; color:#666; margin-top:2px;">{{ desc }}</div>
+          <div style="font-size:.85rem; color:var(--ink-2); margin-top:2px;">{{ desc }}</div>
         </div>
       </div>
       {% endmacro %}
@@ -102,10 +131,10 @@
       {{ step('K', 'Совпадение ≥ 30%',
          'AI сверяет позиции сметы с прайс-листом. Уверенность = лексика(0–0.6) + категория(0–0.3) + ед.изм(0–0.1)') }}
 
-      <div class="mb-3 ms-5 ps-2" style="font-size:.83rem; color:#666;">
-        🟢 ≥ 0.75 — точное совпадение &nbsp;
-        🟡 0.40–0.74 — вероятное &nbsp;
-        ⚫ &lt; 0.40 — нет совпадения
+      <div class="mb-3 ms-5 ps-2" style="font-size:.83rem; color:var(--ink-2);">
+        <span class="dot dot-green"></span>≥ 0.75 — точное совпадение &nbsp;&nbsp;
+        <span class="dot dot-yellow"></span>0.40–0.74 — вероятное &nbsp;&nbsp;
+        <span class="dot dot-grey"></span>&lt; 0.40 — нет совпадения
       </div>
 
       {{ step('L', 'Релевантность ≥ ' ~ settings.x_threshold|int ~ '%',
@@ -114,17 +143,69 @@
       {{ step('M', 'Маржа ≥ ' ~ settings.y_threshold|int ~ '%',
          'M = Σ(наша цена − цена сметы) × кол-во / бюджет. Жёлтые и серые = 0% прибыли') }}
 
-      <hr>
-      <div style="font-size:.9rem; color:#444;">
+      <hr style="border-color:var(--border);">
+      <div style="font-size:.93rem;">
         <strong>Итоговый балл:</strong>
-        S = M × 50% + L × 30% + K × 20%
+        <span style="background:var(--accent-bg); color:var(--accent-ink); padding:2px 10px;
+                     border-radius:6px; font-weight:600;">S = M × 50% + L × 30% + K × 20%</span>
       </div>
-      <div class="mt-3" style="font-size:.85rem; color:#888;">
-        💬 Вопросы по формуле?
-        <a href="/chat" style="color:#1a1a1a;">Спросите AI-ассистента →</a>
+      <div class="mt-3" style="font-size:.85rem; color:var(--muted);">
+        Вопросы по формуле?
+        <a href="/chat" style="color:var(--ink); font-weight:600;">Спросите AI-ассистента →</a>
       </div>
     </div>
   </div>
 
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function paintSlider(el) {
+  const pct = (el.value - el.min) / (el.max - el.min) * 100;
+  el.style.setProperty('--fill', pct + '%');
+}
+
+function syncSlider(rangeEl, hiddenId, outId) {
+  document.getElementById(hiddenId).value = rangeEl.value;
+  document.getElementById(outId).textContent = Number(rangeEl.value).toLocaleString('ru-RU');
+  paintSlider(rangeEl);
+}
+
+['budget-range', 'x-range', 'y-range'].forEach(id => paintSlider(document.getElementById(id)));
+
+// Live preview: debounce slider input, then ask the server how many of the
+// already-analyzed tenders would pass under these trial parameters.
+let previewTimer = null;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(fetchPreview, 350);
+}
+
+async function fetchPreview() {
+  const params = new URLSearchParams();
+  params.set('min_budget', document.getElementById('min_budget').value);
+  params.set('x_threshold', document.getElementById('x_threshold').value);
+  params.set('y_threshold', document.getElementById('y_threshold').value);
+  document.querySelectorAll('input[name="regions"]:checked')
+          .forEach(cb => params.append('regions', cb.value));
+  const line = document.getElementById('preview-line');
+  line.style.opacity = .55;
+  try {
+    const resp = await fetch('/settings/preview?' + params.toString());
+    const data = await resp.json();
+    if (data.total === 0) {
+      line.innerHTML = 'Проанализированных тендеров пока нет — предпросмотр появится после первых результатов парсера';
+    } else {
+      line.innerHTML = `Под эти параметры прошло бы <strong>${data.passing}</strong> из ` +
+                       `<strong>${data.total}</strong> проанализированных тендеров`;
+    }
+  } catch (e) {
+    line.textContent = 'Не удалось получить предпросмотр';
+  }
+  line.style.opacity = 1;
+}
+
+fetchPreview();
+</script>
 {% endblock %}

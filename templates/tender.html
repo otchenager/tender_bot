@@ -66,10 +66,9 @@
 
 <!-- Positions table -->
 <div class="card mb-4">
-  <div style="padding:.85rem 1.2rem; border-bottom:.5px solid #dde0e6;
-              font-weight:600; font-size:.95rem;">
+  <div class="card-header-flat">
     Позиции сметы
-    <span style="font-weight:400; color:#888; font-size:.82rem; margin-left:.5rem;">
+    <span style="font-weight:400; color:var(--muted); font-size:.82rem;">
       ({{ positions | length }})
     </span>
   </div>
@@ -113,18 +112,18 @@
           </td>
           <td class="text-end">
             {% if p.match_status == 'green' and p.margin_byn is not none %}
-              <span class="{{ 'pill-green' if p.margin_byn >= 0 else 'pill-red' }}">
+              <span class="pill {{ 'pill-green' if p.margin_byn >= 0 else 'pill-red' }}">
                 {{ '+' if p.margin_byn >= 0 else '' }}{{ p.margin_byn | fmt_money }}
               </span>
             {% else %}—{% endif %}
           </td>
           <td class="text-center">
             {% if p.match_status == 'green' %}
-              <span class="dot-green"></span>🟢
+              <span class="dot dot-green" title="Точное совпадение"></span>
             {% elif p.match_status == 'yellow' %}
-              <span class="dot-yellow"></span>🟡
+              <span class="dot dot-yellow" title="Вероятное совпадение"></span>
             {% else %}
-              <span class="dot-grey"></span>⚫
+              <span class="dot dot-grey" title="Нет совпадения"></span>
             {% endif %}
           </td>
           <td style="font-size:.82rem; color:#666;">

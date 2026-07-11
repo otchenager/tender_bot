@@ -4,107 +4,142 @@
 
 {% block content %}
 
-<!-- Suitable tenders table -->
-<div class="card mb-4">
-  <div style="padding:.85rem 1.2rem; border-bottom:.5px solid #dde0e6;
-              font-weight:600; font-size:.95rem;">
-    Подходящие тендеры
-    <span style="font-weight:400; color:#888; font-size:.85rem; margin-left:.5rem;">
-      ({{ tenders|length }})
+{# S-score tier: colors the card accent + ring. Thresholds: S is
+   M×50%+L×30%+K×20%, so ≥0.35 is an outstanding deal, ≥0.20 solid. #}
+{% macro tier_color(s) -%}
+  {%- if s is not none and s >= 0.35 -%}#15803d
+  {%- elif s is not none and s >= 0.20 -%}#d97706
+  {%- else -%}#8a94a6{%- endif -%}
+{%- endmacro %}
+
+{% macro score_ring(s) %}
+  {% set pct = (s * 100) if s is not none else 0 %}
+  {% set color = tier_color(s) %}
+  <div class="score-ring" title="Итоговый балл S = M×50% + L×30% + K×20%">
+    <svg width="64" height="64" viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="28" fill="none" stroke="var(--neutral-bg)" stroke-width="6"/>
+      <circle cx="32" cy="32" r="28" fill="none" stroke="{{ color }}" stroke-width="6"
+              stroke-linecap="round"
+              stroke-dasharray="{{ '%.1f' | format(pct * 1.759) }} 176"/>
+    </svg>
+    <div class="ring-val">
+      <span class="ring-num" style="color:{{ color }};">{{ "%.0f" | format(pct) }}</span>
+      <span class="ring-cap">балл S</span>
+    </div>
+  </div>
+{% endmacro %}
+
+{% macro meter(letter, value, color) %}
+  <div class="meter">
+    <span class="meter-label">{{ letter }}</span>
+    <span class="meter-track">
+      <span class="meter-fill" style="width:{{ [value * 100, 100] | min }}%; background:{{ color }};"></span>
     </span>
+    <span class="meter-num">{{ "%.0f" | format(value * 100) }}%</span>
+  </div>
+{% endmacro %}
+
+<div class="d-flex align-items-baseline justify-content-between flex-wrap gap-2 mb-3">
+  <div>
+    <h4 class="mb-1">Подходящие тендеры
+      <span style="font-weight:500; color:var(--muted); font-size:1rem;">({{ tenders|length }})</span>
+    </h4>
     {% if params_updated_at %}
-    <span style="float:right; font-weight:400; color:#888; font-size:.82rem;">
-      актуально на {{ params_updated_at | fmt_date }} (последнее изменение параметров)
-    </span>
+    <div style="font-size:.83rem; color:var(--muted);">
+      актуально на {{ params_updated_at | fmt_date }} — последнее изменение параметров поиска
+    </div>
     {% endif %}
   </div>
-  <table class="table table-hover mb-0 align-middle">
-    <thead class="table-light">
-      <tr>
-        <th style="width:38%; padding-left:1.2rem;">Название</th>
-        <th class="text-end">Бюджет</th>
-        <th class="text-center">K%</th>
-        <th class="text-center">L%</th>
-        <th class="text-center">M%</th>
-        <th class="text-center">Балл S</th>
-        <th>Дата</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for t in tenders %}
-      <tr onclick="location.href='/tender/{{ t.id }}'" style="cursor:pointer;">
-        <td style="padding-left:1.2rem;">
-          <div style="font-weight:600; font-size:.95rem;">
-            {{ t.title or 'Без названия' }}
-          </div>
-          <div style="font-size:.8rem; color:#888;">
-            {{ t.region or '' }}
-            {% if t.deadline %}· до {{ t.deadline[:10] }}{% endif %}
-          </div>
-        </td>
-        <td class="text-end">
-          {% if t.budget_byn %}
-            <strong>{{ t.budget_byn | fmt_money }}</strong> BYN
-          {% else %}—{% endif %}
-        </td>
-        <td class="text-center">
-          {% if t.k_score is not none %}
-            {{ "%.0f"|format(t.k_score * 100) }}%
-          {% else %}—{% endif %}
-        </td>
-        <td class="text-center">
-          {% if t.l_score is not none %}
-            {{ "%.0f"|format(t.l_score * 100) }}%
-          {% else %}—{% endif %}
-        </td>
-        <td class="text-center">
-          {% if t.m_score is not none %}
-            <span class="{{ 'pill-green' if t.m_score >= 0.1 else 'pill-yellow' }}">
-              {{ "%.1f"|format(t.m_score * 100) }}%
-            </span>
-          {% else %}—{% endif %}
-        </td>
-        <td class="text-center">
-          {% if t.s_score is not none %}
-            <strong>{{ "%.1f"|format(t.s_score * 100) }}</strong>
-          {% else %}—{% endif %}
-        </td>
-        <td style="font-size:.82rem; color:#888;">
-          {{ t.created_at | string | truncate(10, True, '') if t.created_at else '' }}
-        </td>
-      </tr>
-      {% else %}
-      <tr>
-        <td colspan="7" class="text-center text-muted py-5">
-          Подходящих тендеров пока нет — парсер работает в фоне
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <a href="/settings" style="font-size:.87rem; color:var(--ink-2); text-decoration:none; font-weight:500;">
+    Настроить параметры →
+  </a>
 </div>
 
+{% if tenders %}
+<div class="d-flex flex-column gap-3 mb-4">
+  {% for t in tenders %}
+  <a class="tender-card" href="/tender/{{ t.id }}" style="--tier: {{ tier_color(t.s_score) }};">
+    <div class="d-flex gap-3 align-items-center">
+
+      <div class="flex-grow-1" style="min-width:0;">
+        <div class="tender-title">{{ t.title or 'Без названия' }}</div>
+        <div class="tender-meta">
+          {% if t.region %}
+          <span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+            {{ t.region }}
+          </span>
+          {% endif %}
+          {% if t.deadline %}
+          <span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+            до {{ t.deadline[:10] }}
+          </span>
+          {% endif %}
+          <span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M8 2v4M16 2v4M3 9h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>
+            {{ t.created_at | string | truncate(10, True, '') if t.created_at else '' }}
+          </span>
+        </div>
+      </div>
+
+      <div class="text-end d-none d-md-block" style="min-width:130px;">
+        {% if t.budget_byn %}
+          <div class="tender-budget">{{ t.budget_byn | fmt_money }} <small>BYN</small></div>
+          <div style="font-size:.75rem; color:var(--muted);">бюджет</div>
+        {% endif %}
+        {% if t.m_score is not none %}
+          <span class="pill {{ 'pill-green' if t.m_score >= 0.10 else 'pill-yellow' if t.m_score >= 0.05 else 'pill-red' }}"
+                style="margin-top:.35rem;">
+            маржа {{ "%.1f" | format(t.m_score * 100) }}%
+          </span>
+        {% endif %}
+      </div>
+
+      <div class="d-none d-lg-flex flex-column gap-1" style="width:190px;">
+        {% if t.k_score is not none %}{{ meter('K', t.k_score, '#64748b') }}{% endif %}
+        {% if t.l_score is not none %}{{ meter('L', t.l_score, '#d97706') }}{% endif %}
+        {% if t.m_score is not none %}{{ meter('M', t.m_score, '#15803d') }}{% endif %}
+      </div>
+
+      {{ score_ring(t.s_score) }}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card mb-4">
+  <div class="empty-state">
+    <div class="es-icon">🏗</div>
+    <div style="font-weight:600; color:var(--ink-2); margin-bottom:.25rem;">Подходящих тендеров пока нет</div>
+    <div style="font-size:.88rem;">Парсер работает в фоне — новые тендеры появятся здесь автоматически</div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Rejected funnel (collapsed) -->
+{% set funnel = [
+  ('failed_I', 'Не прошли по ключевым словам'),
+  ('failed_B', 'Бюджет слишком мал'),
+  ('failed_R', 'Не наш регион'),
+  ('failed_K', 'Мало совпадений (K < 30%)'),
+  ('failed_L', 'Низкая релевантность (L)'),
+  ('failed_M', 'Низкая маржа (M)'),
+  ('ai_error', 'Ошибка AI'),
+] %}
+{% set funnel_max = [rejected.values() | list | max if rejected else 1, 1] | max %}
 <details>
-  <summary style="cursor:pointer; font-weight:600; font-size:.95rem; color:#555;
-                  padding:.5rem 0; user-select:none; list-style:none;">
-    ▸ Воронка фильтрации (последние 24 часа)
+  <summary style="cursor:pointer; font-weight:600; font-size:.93rem; color:var(--ink-2);
+                  padding:.5rem 0; user-select:none;">
+    Воронка фильтрации — последние 24 часа
   </summary>
-  <div class="card mt-2 p-3" style="max-width:480px;">
-    {% set funnel = [
-      ('failed_I', '🔍', 'Не прошли по ключевым словам'),
-      ('failed_B', '💰', 'Бюджет слишком мал'),
-      ('failed_R', '📍', 'Не наш регион'),
-      ('failed_K', '📊', 'Мало совпадений (K < 30%)'),
-      ('failed_L', '📈', 'Низкая релевантность (L)'),
-      ('failed_M', '📉', 'Низкая маржа (M)'),
-      ('ai_error', '⚠️', 'Ошибка AI'),
-    ] %}
-    {% for reason, icon, label in funnel %}
+  <div class="card mt-2 p-3" style="max-width:560px;">
+    {% for reason, label in funnel %}
+    {% set cnt = rejected.get(reason, 0) %}
     <div class="funnel-row">
-      <span class="funnel-cnt">{{ rejected.get(reason, 0) }}</span>
-      <span>{{ icon }}</span>
-      <span style="color:#555;">{{ label }}</span>
+      <span class="funnel-cnt">{{ cnt }}</span>
+      <span style="color:var(--ink-2); min-width:240px;">{{ label }}</span>
+      <span class="funnel-bar"><i style="width:{{ (cnt / funnel_max * 100) | round }}%;"></i></span>
     </div>
     {% endfor %}
   </div>

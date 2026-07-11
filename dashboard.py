@@ -207,6 +207,23 @@ def settings_save():
     return redirect(url_for("settings", saved=1, **stats))
 
 
+@app.route("/settings/preview")
+@rate_limit(60, 60)  # fired on slider drag (debounced client-side)
+def settings_preview():
+    """Live preview: how many already-analyzed tenders would pass under the
+    parameters currently set in the form (nothing is saved)."""
+    try:
+        trial = {
+            "min_budget": float(request.args.get("min_budget", 0)),
+            "x_threshold": float(request.args.get("x_threshold", 30)),
+            "y_threshold": float(request.args.get("y_threshold", 5)),
+            "regions": request.args.getlist("regions"),
+        }
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad params"}), 400
+    return jsonify(file_processor.preview_pass_counts(trial))
+
+
 # ---------------------------------------------------------------------------
 # Tab 4 — AI assistant
 # ---------------------------------------------------------------------------
