@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+import alerts
 from logger import get_logger
 
 log = get_logger("scraper_goszakupki")
@@ -81,9 +82,21 @@ def _sleep():
     time.sleep(random.uniform(1, 2.5))
 
 
+# Request-layer seam: every HTTP call goes through `transport` so a rotating
+# proxy pool can be plugged in later by swapping in a same-signature callable —
+# parsing logic never talks to `requests` directly. The session argument must
+# keep being honored: goszakupki depends on the session-cookie flow.
+def _default_transport(url, *, session=None, params=None, headers=None, timeout=60):
+    requester = session if session is not None else requests
+    return requester.get(url, params=params, headers=headers, timeout=timeout, verify=False)
+
+
+transport = _default_transport
+
+
 def _get(session: requests.Session, url: str):
     try:
-        resp = session.get(url, headers=HEADERS, timeout=60, verify=False)
+        resp = transport(url, session=session, headers=HEADERS, timeout=60)
     except requests.RequestException as e:
         log.error(f"Request error {url}: {e}")
         return None
@@ -93,6 +106,11 @@ def _get(session: requests.Session, url: str):
     if resp.status_code != 200:
         log.warning(f"HTTP {resp.status_code} for {url}")
         return None
+    if alerts.looks_like_captcha(resp.text):
+        # Explicitly a CAPTCHA, not an empty page — abort the round and tell
+        # the operator; retrying immediately would only feed the challenge.
+        alerts.alert_captcha("goszakupki.by", url)
+        return "STOP"
     return resp
 
 

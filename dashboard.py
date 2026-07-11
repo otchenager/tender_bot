@@ -9,9 +9,15 @@ import db
 import file_processor
 from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 from logger import get_logger
+from ratelimit import global_rate_limit, rate_limit
 
 log = get_logger("dashboard")
 app = Flask(__name__)
+
+
+@app.before_request
+def _rate_guard():
+    return global_rate_limit()
 
 _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=2)
 
@@ -166,6 +172,7 @@ def settings():
 
 
 @app.route("/settings/save", methods=["POST"])
+@rate_limit(10, 60)  # each save triggers a full rescore of stored tenders
 def settings_save():
     regions = request.form.getlist("regions")
     try:
@@ -210,6 +217,7 @@ def chat():
 
 
 @app.route("/chat/message", methods=["POST"])
+@rate_limit(10, 60)  # each call is a Claude API call — keep abuse cheap
 def chat_message():
     user_msg = (request.json or {}).get("message", "").strip()
     if not user_msg:

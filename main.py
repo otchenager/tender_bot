@@ -4,6 +4,7 @@ No scraper, no APScheduler.
 """
 
 import base64
+import hmac
 import os
 import threading
 from pathlib import Path
@@ -15,6 +16,7 @@ import file_processor
 from config import check_config
 from dashboard import app
 from logger import get_logger
+from ratelimit import rate_limit
 
 log = get_logger("main")
 
@@ -26,8 +28,13 @@ INGEST_API_KEY = os.getenv("INGEST_API_KEY", "")
 # ---------------------------------------------------------------------------
 
 @app.route("/api/ingest_tender", methods=["POST"])
+@rate_limit(30, 60)
 def ingest_tender():
-    if not INGEST_API_KEY or request.headers.get("X-API-Key") != INGEST_API_KEY:
+    # The key check is mandatory and fail-closed: with INGEST_API_KEY unset
+    # on the server, EVERY request is rejected (never open). compare_digest
+    # keeps the comparison constant-time.
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
         return jsonify({"error": "unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}

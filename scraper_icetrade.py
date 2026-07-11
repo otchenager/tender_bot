@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+import alerts
 from logger import get_logger
 
 log = get_logger("scraper_icetrade")
@@ -59,14 +60,30 @@ RETRIES_403 = 2
 RETRY_403_BASE_WAIT = 5  # seconds; grows per attempt (5s, 10s)
 
 
+# Request-layer seam: every HTTP call goes through `transport` so a rotating
+# proxy pool can be plugged in later by swapping in a same-signature callable —
+# parsing logic never talks to `requests` directly.
+def _default_transport(url, *, session=None, params=None, headers=None, timeout=60):
+    requester = session if session is not None else requests
+    return requester.get(url, params=params, headers=headers, timeout=timeout, verify=False)
+
+
+transport = _default_transport
+
+
 def _get(url: str, params=None):
     for attempt in range(RETRIES_403 + 1):
         try:
-            resp = requests.get(url, headers=HEADERS, params=params, timeout=60, verify=False)
+            resp = transport(url, params=params, headers=HEADERS, timeout=60)
         except requests.RequestException as e:
             log.error(f"Request error {url}: {e}")
             return None
         if resp.status_code == 200:
+            if alerts.looks_like_captcha(resp.text):
+                # Explicitly a CAPTCHA, not an empty page — alert the
+                # operator instead of failing silently.
+                alerts.alert_captcha("icetrade.by", url)
+                return None
             return resp
         if resp.status_code == 403 and attempt < RETRIES_403:
             wait = RETRY_403_BASE_WAIT * (attempt + 1)
