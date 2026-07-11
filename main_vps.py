@@ -30,6 +30,15 @@ log = get_logger("main_vps")
 RAILWAY_URL    = os.getenv("RAILWAY_URL", "").rstrip("/")
 INGEST_API_KEY = os.getenv("INGEST_API_KEY", "")
 MIN_BUDGET     = float(os.getenv("MIN_BUDGET", "36000"))
+# Budget-threshold tradeoff: 36000 BYN fits capital-repair contracts, but
+# goszakupki "single-source" procedures are mostly material/small-work
+# purchases in the 500–30000 BYN range — one global floor silently drops
+# them all. Lowering the global floor instead would flood the AI pipeline
+# (Claude cost + noise) with small tenders from every procedure type, so
+# single-source gets its own configurable floor. Default equals MIN_BUDGET,
+# i.e. behavior does NOT change until the operator consciously sets
+# MIN_BUDGET_SINGLE_SOURCE in .env (e.g. 500 to admit material purchases).
+MIN_BUDGET_SINGLE_SOURCE = float(os.getenv("MIN_BUDGET_SINGLE_SOURCE", str(MIN_BUDGET)))
 REGIONS        = [r.strip() for r in os.getenv("REGIONS", "Минская,г. Минск").split(",") if r.strip()]
 KEYWORDS       = [k.strip().lower() for k in os.getenv("VPS_KEYWORDS", "").split(",") if k.strip()]
 
@@ -176,10 +185,16 @@ def parse_and_send():
                 log.info(f"  → failed_I: {ext_id}")
                 continue
 
-            # Filter B — minimum budget
+            # Filter B — minimum budget (per procedure type, see comment at
+            # MIN_BUDGET_SINGLE_SOURCE above)
             budget = raw.get("budget_byn") or 0
-            if budget < MIN_BUDGET:
-                log.info(f"  → failed_B: {ext_id} (budget={budget})")
+            min_budget = (
+                MIN_BUDGET_SINGLE_SOURCE
+                if raw.get("tender_type") == "single-source"
+                else MIN_BUDGET
+            )
+            if budget < min_budget:
+                log.info(f"  → failed_B: {ext_id} (budget={budget}, floor={min_budget})")
                 continue
 
             # Filter R — region
