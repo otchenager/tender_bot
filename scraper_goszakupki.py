@@ -151,18 +151,29 @@ def _extract_region(text: str | None) -> str | None:
 # e.g. "Республика Беларусь, г. Минск, 220006, ул.Полевая, д.24".
 _ADDRESS_HINT = "республика беларусь"
 
+# Detail pages ALSO carry the platform operator's own requisites block
+# ("Национальный центр поддержки экспорта", Minsk, info@goszakupki.by) —
+# and it comes BEFORE the customer block in document order. Verified live
+# on /etrade/view/3512202 (2026-07-11). Blocks mentioning the platform's
+# domain are the operator's, never the customer's — skip them, otherwise
+# every tender in the country would be labeled "г. Минск".
+_OPERATOR_MARKER = "goszakupki.by"
+
 
 def _find_address_block(soup: BeautifulSoup) -> str | None:
-    """Find the customer address on a detail page without relying on labels.
+    """Find the CUSTOMER address on a detail page without relying on labels.
 
     On real detail pages (e.g. /etrade/view/3512202) the address sits in a
     plain <td> with no adjacent label cell, so the LABEL_MAP th/td scan never
-    sees it. Instead take the first short text block that starts like a
-    Belarusian address.
+    sees it. Take the first short Belarusian-address-looking block that is
+    not the platform operator's requisites.
     """
     for tag in soup.find_all(["td", "li", "p"]):
         text = tag.get_text(" ", strip=True)
-        if text and len(text) <= 300 and _ADDRESS_HINT in text.lower():
+        if not text or len(text) > 300:
+            continue
+        low = text.lower()
+        if _ADDRESS_HINT in low and _OPERATOR_MARKER not in low:
             return text
     return None
 
@@ -171,15 +182,18 @@ def _extract_region_from_page(page_text: str | None) -> str | None:
     """Last-resort region scan: keyword within 250 chars after any
     "Республика Беларусь" mention. Deliberately NOT a whole-page keyword
     scan — the site chrome/footer mentions Minsk and would mislabel every
-    tender as "г. Минск". Within the window the keyword CLOSEST to the
-    address marker wins (an address reads left to right: the region comes
-    right after "Республика Беларусь", anything further away is unrelated
-    page text)."""
+    tender as "г. Минск". Windows containing the operator's domain are the
+    platform's own requisites block — skipped (see _OPERATOR_MARKER).
+    Within a window the keyword CLOSEST to the address marker wins (an
+    address reads left to right: the region comes right after "Республика
+    Беларусь", anything further away is unrelated page text)."""
     if not page_text:
         return None
     low = page_text.lower()
     for m in re.finditer(_ADDRESS_HINT, low):
         window = low[m.end():m.end() + 250]
+        if _OPERATOR_MARKER in window:
+            continue
         best_pos, best_region = None, None
         for keywords, region in REGION_KEYWORDS:
             for kw in keywords:
