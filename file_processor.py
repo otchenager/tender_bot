@@ -73,6 +73,31 @@ def _docx_to_text(file_bytes: bytes) -> str:
     return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
 
+def _xlsx_to_text(file_bytes: bytes, max_chars: int = 100_000) -> str:
+    """Dump all sheets as tab-separated text. BY customers routinely attach
+    the smeta as a spreadsheet (e.g. 'копия заказчик.xlsx' on etrade_3512202,
+    while the PDF is a scan) — without this the pipeline saw no positions."""
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    lines = []
+    total = 0
+    for ws in wb.worksheets:
+        lines.append(f"=== Лист: {ws.title} ===")
+        for row in ws.iter_rows(values_only=True):
+            cells = ["" if c is None else str(c) for c in row]
+            if not any(c.strip() for c in cells):
+                continue
+            line = "\t".join(cells).rstrip()
+            lines.append(line)
+            total += len(line)
+            if total > max_chars:
+                lines.append("[... таблица усечена ...]")
+                wb.close()
+                return "\n".join(lines)
+    wb.close()
+    return "\n".join(lines)
+
+
 def _pdf_to_images_b64(file_bytes: bytes) -> list[str]:
     try:
         import os
@@ -111,6 +136,11 @@ def _extract_text_from_documents(documents: list[tuple[str, bytes]]) -> tuple[st
                 texts.append(_docx_to_text(file_bytes))
             except Exception as e:
                 log.warning(f"docx error {filename}: {e}")
+        elif ext in ("xlsx", "xlsm"):
+            try:
+                texts.append(_xlsx_to_text(file_bytes))
+            except Exception as e:
+                log.warning(f"xlsx error {filename}: {e}")
     return "\n\n".join(texts), images
 
 
