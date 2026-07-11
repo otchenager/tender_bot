@@ -51,16 +51,34 @@ def _sleep():
     time.sleep(random.uniform(1, 2.5))
 
 
+# icetrade.by throws intermittent 403s on the same URL (rate limiting, not a
+# hard block — a retry seconds later usually returns 200). Retry a couple of
+# times with a growing pause before giving up, so transient 403s don't get
+# logged as "page empty" / missing cards.
+RETRIES_403 = 2
+RETRY_403_BASE_WAIT = 5  # seconds; grows per attempt (5s, 10s)
+
+
 def _get(url: str, params=None):
-    try:
-        resp = requests.get(url, headers=HEADERS, params=params, timeout=60, verify=False)
-    except requests.RequestException as e:
-        log.error(f"Request error {url}: {e}")
-        return None
-    if resp.status_code != 200:
+    for attempt in range(RETRIES_403 + 1):
+        try:
+            resp = requests.get(url, headers=HEADERS, params=params, timeout=60, verify=False)
+        except requests.RequestException as e:
+            log.error(f"Request error {url}: {e}")
+            return None
+        if resp.status_code == 200:
+            return resp
+        if resp.status_code == 403 and attempt < RETRIES_403:
+            wait = RETRY_403_BASE_WAIT * (attempt + 1)
+            log.warning(
+                f"HTTP 403 for {url} — rate limited, retry "
+                f"{attempt + 1}/{RETRIES_403} in {wait}s"
+            )
+            time.sleep(wait)
+            continue
         log.warning(f"HTTP {resp.status_code} for {url}")
         return None
-    return resp
+    return None
 
 
 def _parse_amount(text: str) -> float | None:

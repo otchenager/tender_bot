@@ -129,6 +129,50 @@ def _extract_region(text: str | None) -> str | None:
     return None
 
 
+# Marker that reliably prefixes customer address lines on detail pages,
+# e.g. "Республика Беларусь, г. Минск, 220006, ул.Полевая, д.24".
+_ADDRESS_HINT = "республика беларусь"
+
+
+def _find_address_block(soup: BeautifulSoup) -> str | None:
+    """Find the customer address on a detail page without relying on labels.
+
+    On real detail pages (e.g. /etrade/view/3512202) the address sits in a
+    plain <td> with no adjacent label cell, so the LABEL_MAP th/td scan never
+    sees it. Instead take the first short text block that starts like a
+    Belarusian address.
+    """
+    for tag in soup.find_all(["td", "li", "p"]):
+        text = tag.get_text(" ", strip=True)
+        if text and len(text) <= 300 and _ADDRESS_HINT in text.lower():
+            return text
+    return None
+
+
+def _extract_region_from_page(page_text: str | None) -> str | None:
+    """Last-resort region scan: keyword within 250 chars after any
+    "Республика Беларусь" mention. Deliberately NOT a whole-page keyword
+    scan — the site chrome/footer mentions Minsk and would mislabel every
+    tender as "г. Минск". Within the window the keyword CLOSEST to the
+    address marker wins (an address reads left to right: the region comes
+    right after "Республика Беларусь", anything further away is unrelated
+    page text)."""
+    if not page_text:
+        return None
+    low = page_text.lower()
+    for m in re.finditer(_ADDRESS_HINT, low):
+        window = low[m.end():m.end() + 250]
+        best_pos, best_region = None, None
+        for keywords, region in REGION_KEYWORDS:
+            for kw in keywords:
+                pos = window.find(kw)
+                if pos != -1 and (best_pos is None or pos < best_pos):
+                    best_pos, best_region = pos, region
+        if best_region:
+            return best_region
+    return None
+
+
 def _parse_href(href: str):
     """Return (external_id, tender_type) parsed from a real detail-page href.
 
@@ -235,6 +279,17 @@ def _parse_card(session: requests.Session, url: str) -> dict | None:
                     earliest = iso
         if earliest:
             data["deadline"] = earliest
+
+    # Address fallback: the label-based scan above misses addresses that sit
+    # in an unlabeled <td> (the common case on real detail pages).
+    if not data.get("address"):
+        block = _find_address_block(soup)
+        if block:
+            data["address"] = block
+
+    # Raw page text kept for the last-resort region scan and for debuggable
+    # logging when nothing matches (never log bare empty strings).
+    data["_page_text"] = soup.get_text(" ", strip=True)
 
     # Documents
     for a in soup.select("a[href$='.pdf'], a[href$='.docx']"):
@@ -366,11 +421,18 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
             deadline = card.get("deadline") or row.get("deadline")
             address = card.get("address", "")
             customer = card.get("customer", "")
-            region = _extract_region(address) or _extract_region(customer)
+            region = (
+                _extract_region(address)
+                or _extract_region(customer)
+                or _extract_region_from_page(card.get("_page_text"))
+            )
             if region is None:
+                # Log the raw block we actually looked at so failures are
+                # debuggable — an empty-string log line tells us nothing.
+                raw = address or customer or card.get("_page_text", "")
                 log.warning(
                     f"goszakupki region not matched for {ext_id}: "
-                    f"address={address!r} customer={customer!r}"
+                    f"raw_block={raw[:500]!r}"
                 )
 
             results.append({
