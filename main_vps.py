@@ -126,31 +126,49 @@ def _send_tender(tender: dict, documents: list[tuple[str, bytes]]) -> bool:
 # Main parse-and-send round
 # ---------------------------------------------------------------------------
 
+# (source_name, module, checkpoint key, max_pages override)
+# goszakupki manages its own bootstrap/incremental page limits internally
+# (see FIRST_RUN_MAX_PAGES / SAFETY_MAX_PAGES there) — pass None to let it.
+SOURCES = [
+    ("goszakupki", scraper_goszakupki, "goszakupki_last_id", None),
+    ("icetrade",   scraper_icetrade,   "icetrade_last_id",   10),
+]
+
+
 def parse_and_send():
     log.info("=== Parser round started ===")
     checkpoint = _load_checkpoint()
 
-    for source_name, scraper_module in [
-        ("goszakupki", scraper_goszakupki),
-        ("icetrade",   scraper_icetrade),
-    ]:
-        last_id = checkpoint.get(source_name)
-        log.info(f"{source_name} checkpoint: {last_id or 'none (full scan)'}")
+    for source_name, scraper_module, checkpoint_key, max_pages in SOURCES:
+        # Migrate old-style bare-source-name checkpoint keys if present.
+        if checkpoint_key not in checkpoint and source_name in checkpoint:
+            checkpoint[checkpoint_key] = checkpoint.pop(source_name)
+
+        last_id = checkpoint.get(checkpoint_key)
+        log.info(f"{source_name} checkpoint: {last_id or 'none (first run / bootstrap)'}")
+
+        fetch_kwargs = {"checkpoint_external_id": last_id}
+        if max_pages is not None:
+            fetch_kwargs["max_pages"] = max_pages
 
         try:
-            raw_tenders = scraper_module.fetch_tenders(
-                checkpoint_external_id=last_id,
-                max_pages=10,
-            )
+            raw_tenders = scraper_module.fetch_tenders(**fetch_kwargs)
         except Exception as e:
             log.error(f"{source_name} scraper error: {e}")
             continue
 
         log.info(f"{source_name}: fetched {len(raw_tenders)} tenders")
 
-        new_checkpoint = last_id
+        skipped_type_count = 0
+        passed_count = 0
         for raw in raw_tenders:
             ext_id = raw["external_id"]
+
+            # Tenders the scraper flagged as not real procurements
+            # (e.g. goszakupki "marketing" type) — placeholder only, skip.
+            if raw.get("_skip"):
+                skipped_type_count += 1
+                continue
 
             # Filter I — keyword match
             title = (raw.get("title") or "").lower()
@@ -170,6 +188,7 @@ def parse_and_send():
                 log.info(f"  → failed_R: {ext_id} (region={region!r})")
                 continue
 
+            passed_count += 1
             log.info(f"  → passed I/B/R: {ext_id}, downloading docs")
             documents = _download_documents(raw.get("doc_urls", []))
 
@@ -177,11 +196,16 @@ def parse_and_send():
             log.info(f"  → {'sent' if ok else 'FAILED to send'}: {ext_id}")
 
         # Advance checkpoint to the newest seen id (first in list = most recent)
-        if raw_tenders:
-            new_checkpoint = raw_tenders[0]["external_id"]
+        new_checkpoint = raw_tenders[0]["external_id"] if raw_tenders else last_id
+
+        log.info(
+            f"{source_name} summary: fetched={len(raw_tenders)}, "
+            f"skipped_by_type={skipped_type_count}, passed_I/B/R={passed_count}, "
+            f"checkpoint={new_checkpoint or 'none'}"
+        )
 
         if new_checkpoint != last_id:
-            checkpoint[source_name] = new_checkpoint
+            checkpoint[checkpoint_key] = new_checkpoint
             _save_checkpoint(checkpoint)
 
     log.info("=== Parser round complete ===")

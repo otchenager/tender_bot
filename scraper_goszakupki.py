@@ -2,6 +2,7 @@
 Парсер тендеров с goszakupki.by.
 
 ВАЖНО: сайт доступен только с белорусского IP.
+Категория содержит ~20 000+ страниц — полное сканирование запрещено.
 Возвращает стандартизированные словари готовые для db.save_tender().
 """
 
@@ -34,12 +35,25 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9",
 }
 
-REGIONS = [
-    "Минская", "Витебская", "Могилёвская", "Гродненская",
-    "Брестская", "Гомельская", "г. Минск", "Минск",
-]
+# Pagination safety limits — the category has 20k+ pages, we must never
+# crawl blindly. First-ever run bootstraps with a shallow scan; every
+# subsequent run walks forward from page 1 until it hits the checkpoint.
+FIRST_RUN_MAX_PAGES = 20
+SAFETY_MAX_PAGES = 30
 
 ACTIVE_LOT_STATUSES = ["подача предложений", "подача документов/сведений"]
+
+# Tender type (taken from the URL path segment before /view/{id}).
+# marketing = market research survey, no real budget/documents — skip entirely.
+# etrade/limited = real competitions, high priority. single-source/request = normal.
+TENDER_TYPE_PRIORITY = {
+    "etrade": "high",
+    "limited": "high",
+    "single-source": "normal",
+    "request": "normal",
+    "marketing": "skip",
+}
+SKIP_TENDER_TYPES = {t for t, p in TENDER_TYPE_PRIORITY.items() if p == "skip"}
 
 LABEL_MAP = {
     "title":    ["название"],
@@ -47,8 +61,20 @@ LABEL_MAP = {
     "deadline": ["окончания сведений", "окончания предложений", "окончания документов"],
     "amount":   ["предельная стоимость"],
     "address":  ["адрес", "место нахождения"],
-    "region":   ["область", "регион"],
 }
+
+# Region is derived from the customer/address text on the detail page,
+# not a standalone field. First match wins, order matters (e.g. "минская"
+# would otherwise match the "минск" substring inside "г. минск" checks).
+REGION_KEYWORDS = [
+    (("г. минск", "г.минск"), "г. Минск"),
+    (("минская обл", "минск обл"), "Минская"),
+    (("витебская",), "Витебская"),
+    (("могилевская", "могилёвская"), "Могилевская"),
+    (("гродненская",), "Гродненская"),
+    (("брестская",), "Брестская"),
+    (("гомельская",), "Гомельская"),
+]
 
 
 def _sleep():
@@ -97,17 +123,24 @@ def _extract_region(text: str | None) -> str | None:
     if not text:
         return None
     t = text.lower()
-    for r in REGIONS:
-        if r.lower() in t:
-            return "г. Минск" if r == "Минск" else r
+    for keywords, region in REGION_KEYWORDS:
+        if any(kw in t for kw in keywords):
+            return region
     return None
 
 
-def _build_external_id(href: str) -> str | None:
+def _parse_href(href: str):
+    """Return (external_id, tender_type) parsed from a real detail-page href.
+
+    Real formats seen on site: /etrade/view/{id}, /single-source/view/{id},
+    /limited/view/{id}, /marketing/view/{id}, /request/view/{id}.
+    """
     m = re.search(r"/([a-z\-]+)/view/(\d+)", href)
     if not m:
-        return None
-    return f"{m.group(1).replace('-', '_')}_{m.group(2)}"
+        return None, None
+    tender_type = m.group(1)
+    external_id = f"{tender_type.replace('-', '_')}_{m.group(2)}"
+    return external_id, tender_type
 
 
 def _match_label(label: str) -> str | None:
@@ -128,15 +161,19 @@ def _parse_list_page(soup: BeautifulSoup):
         if not link:
             continue
         href = link.get("href", "")
-        external_id = _build_external_id(href)
+        external_id, tender_type = _parse_href(href)
         if not external_id:
             continue
+        # Detail URL comes straight from the row's actual <a href>, never
+        # constructed manually — the path segment (etrade/limited/single-source/...)
+        # varies per tender and can't be guessed.
         url = href if href.startswith("http") else f"{BASE_URL}{href}"
         cells = row.find_all("td")
         amount_text = cells[-1].get_text(strip=True) if cells else ""
         deadline_text = cells[-2].get_text(strip=True) if len(cells) >= 2 else ""
         rows.append({
             "external_id": external_id,
+            "tender_type": tender_type,
             "url": url,
             "title_hint": link.get_text(strip=True),
             "amount": _parse_amount(amount_text),
@@ -215,15 +252,26 @@ def _parse_card(session: requests.Session, url: str) -> dict | None:
 
 
 def fetch_tenders(checkpoint_external_id: str | None = None,
-                  max_pages: int = 10) -> list[dict]:
+                  max_pages: int | None = None) -> list[dict]:
     """
     Fetch new tenders from goszakupki.by.
 
-    Paginates from newest to oldest, stopping when checkpoint_external_id is seen.
-    Returns list of standardized tender dicts.
+    Incremental checkpoint scan: paginates from newest to oldest (page 1, 2, 3...)
+    and stops as soon as checkpoint_external_id is seen — everything after that
+    point is already known. With no checkpoint (first run ever), bootstraps with
+    a shallow scan of FIRST_RUN_MAX_PAGES pages instead of crawling everything.
+
+    A hard SAFETY_MAX_PAGES cap always applies so a missing/stale checkpoint can
+    never trigger a full 20k-page crawl.
+
+    Returns a list of standardized tender dicts. Tenders of a skip-listed type
+    (currently "marketing") are included only as minimal placeholders so the
+    newest-id checkpoint still advances correctly — callers should skip any
+    entry whose "tender_type" is in a skip type before further processing.
     """
     results = []
     seen = set()
+    skipped_by_type: dict[str, int] = {}
 
     session = requests.Session()
     home_resp = _get(session, BASE_URL + "/")
@@ -233,11 +281,29 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
         log.error("goszakupki: failed to establish session via homepage, aborting")
         return results
 
-    for page in range(1, max_pages + 1):
+    is_first_run = not checkpoint_external_id
+    page_limit = FIRST_RUN_MAX_PAGES if is_first_run else SAFETY_MAX_PAGES
+    if max_pages is not None:
+        page_limit = min(page_limit, max_pages)
+
+    log.info(
+        "goszakupki run mode: "
+        f"{'first run / bootstrap' if is_first_run else f'incremental from checkpoint {checkpoint_external_id}'}"
+        f", page_limit={page_limit}"
+    )
+
+    newest_id = None
+    hit_checkpoint = False
+    aborted = False
+    last_page = 0
+
+    for page in range(1, page_limit + 1):
+        last_page = page
         url = LIST_URL if page == 1 else f"{LIST_URL}&page={page}"
-        log.info(f"goszakupki page {page}: {url}")
+        log.info(f"goszakupki page {page}/{page_limit}: {url}")
         resp = _get(session, url)
         if resp == "STOP":
+            aborted = True
             break
         if resp is None:
             _sleep()
@@ -249,22 +315,44 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
             log.info(f"goszakupki page {page} empty, stopping")
             break
 
-        stop = False
         for row in row_infos:
             ext_id = row["external_id"]
             if ext_id in seen:
                 continue
             seen.add(ext_id)
 
+            if newest_id is None:
+                newest_id = ext_id
+
             if checkpoint_external_id and ext_id == checkpoint_external_id:
-                log.info(f"goszakupki reached checkpoint {checkpoint_external_id}, stopping")
-                stop = True
+                log.info(f"goszakupki reached checkpoint {checkpoint_external_id} on page {page}, stopping")
+                hit_checkpoint = True
                 break
+
+            tender_type = row.get("tender_type")
+            if tender_type in SKIP_TENDER_TYPES:
+                skipped_by_type[tender_type] = skipped_by_type.get(tender_type, 0) + 1
+                log.info(f"skipped_type: {ext_id} ({tender_type} - not a real procurement)")
+                # Minimal placeholder so the checkpoint still reflects this id.
+                results.append({
+                    "external_id": ext_id,
+                    "source": "goszakupki",
+                    "tender_type": tender_type,
+                    "title": row.get("title_hint", ""),
+                    "url": row["url"],
+                    "region": None,
+                    "budget_byn": None,
+                    "deadline": None,
+                    "doc_urls": [],
+                    "_skip": True,
+                })
+                continue
 
             _sleep()
             card = _parse_card(session, row["url"])
             if card == "STOP":
-                return results
+                aborted = True
+                break
             if card is None:
                 continue
             if not card.get("_active_lot", True):
@@ -277,11 +365,18 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
             amount = card.get("amount") or row.get("amount")
             deadline = card.get("deadline") or row.get("deadline")
             address = card.get("address", "")
-            region = _extract_region(address) or _extract_region(card.get("customer", ""))
+            customer = card.get("customer", "")
+            region = _extract_region(address) or _extract_region(customer)
+            if region is None:
+                log.warning(
+                    f"goszakupki region not matched for {ext_id}: "
+                    f"address={address!r} customer={customer!r}"
+                )
 
             results.append({
                 "external_id": ext_id,
                 "source": "goszakupki",
+                "tender_type": tender_type,
                 "title": title.strip(),
                 "url": row["url"],
                 "region": region,
@@ -289,11 +384,26 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
                 "deadline": deadline,
                 "doc_urls": card.get("documents", []),
             })
-            log.info(f"goszakupki found: {ext_id} — {title[:60]}")
+            log.info(f"goszakupki found: {ext_id} — {title[:60]} [{tender_type}]")
 
-        if stop:
+        if hit_checkpoint or aborted:
             break
         _sleep()
 
-    log.info(f"goszakupki total fetched: {len(results)}")
+    if not is_first_run and not hit_checkpoint and not aborted and last_page >= page_limit:
+        log.warning(
+            f"goszakupki hit safety page limit ({page_limit}) without finding checkpoint "
+            f"{checkpoint_external_id} — some tenders may have been missed, investigate"
+        )
+
+    passed = sum(1 for r in results if not r.get("_skip"))
+    skipped_total = sum(skipped_by_type.values())
+    log.info(
+        f"goszakupki total fetched: {len(results)} "
+        f"(passed_to_filters: {passed}, skipped_by_type: {skipped_total} {skipped_by_type})"
+    )
+
+    if newest_id:
+        log.info(f"goszakupki newest id this run: {newest_id}")
+
     return results
