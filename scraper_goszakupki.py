@@ -328,12 +328,16 @@ def _parse_card(session: requests.Session, url: str) -> dict | None:
     # (verified live on /etrade/view/3512202). Suffix-matched .pdf/.docx
     # links on detail pages are site chrome (regulations, privacy policy),
     # NOT tender documents — sending those to the AI produced ai_error.
+    # Bare get-file URLs return JSON metadata; the file bytes come only
+    # with &download=1 (verified live: metadata 131 bytes vs %PDF payload).
     for a in soup.select("a[href*='get-file']"):
         href = a.get("href", "")
         if not href:
             continue
+        url = href if href.startswith("http") else f"{BASE_URL}{href}"
+        url += "&download=1" if "?" in url else "?download=1"
         data["documents"].append({
-            "url": href if href.startswith("http") else f"{BASE_URL}{href}",
+            "url": url,
             "filename": a.get_text(strip=True) or None,
         })
 
