@@ -162,6 +162,21 @@ def tender_exists(external_id: str, source: str) -> bool:
         return cur.fetchone() is not None
 
 
+def delete_failed_tender(external_id: str, source: str) -> bool:
+    """Remove a tender whose ANALYSIS failed (ai_error) so a re-ingest can
+    retry it — transient AI failures must not permanently blacklist a
+    tender. Formula-rejected and suitable tenders are never touched.
+    Positions cascade-delete. Returns True when a row was removed."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            DELETE FROM tenders
+            WHERE external_id = %s AND source = %s
+              AND status = 'rejected' AND reject_reason = 'ai_error'
+        """, (external_id, source))
+        return cur.rowcount > 0
+
+
 def save_tender(tender: dict) -> int:
     """Insert new tender with status=pending. Returns tender id."""
     with _conn() as conn:

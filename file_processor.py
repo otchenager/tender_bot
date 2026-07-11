@@ -75,10 +75,13 @@ def _docx_to_text(file_bytes: bytes) -> str:
 
 def _pdf_to_images_b64(file_bytes: bytes) -> list[str]:
     try:
+        import os
         from pdf2image import convert_from_bytes
+        # POPPLER_PATH is only needed on Windows dev machines; on Railway
+        # (Linux) poppler must be on PATH and the hardcoded C:\ path broke it.
         images = convert_from_bytes(
             file_bytes, dpi=200, fmt="png",
-            poppler_path=r"C:\poppler\Library\bin",
+            poppler_path=os.getenv("POPPLER_PATH") or None,
         )
         result = []
         for img in images:

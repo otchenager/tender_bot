@@ -47,7 +47,12 @@ def ingest_tender():
     ext_id = data["external_id"]
 
     if db.tender_exists(ext_id, source):
-        return jsonify({"status": "duplicate"}), 200
+        # A previous attempt that died in analysis (ai_error) gets retried;
+        # real results (suitable / formula-rejected) stay deduplicated.
+        if db.delete_failed_tender(ext_id, source):
+            log.info(f"Re-ingesting previously failed tender {ext_id}")
+        else:
+            return jsonify({"status": "duplicate"}), 200
 
     tender_id = db.save_tender({
         "external_id": ext_id,

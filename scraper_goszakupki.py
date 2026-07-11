@@ -323,13 +323,19 @@ def _parse_card(session: requests.Session, url: str) -> dict | None:
     # logging when nothing matches (never log bare empty strings).
     data["_page_text"] = soup.get_text(" ", strip=True)
 
-    # Documents
-    for a in soup.select("a[href$='.pdf'], a[href$='.docx']"):
+    # Documents: real attachments live at /etrade/get-file/{id}?c=detail&f=N
+    # — no file extension in the href, the real filename is the link text
+    # (verified live on /etrade/view/3512202). Suffix-matched .pdf/.docx
+    # links on detail pages are site chrome (regulations, privacy policy),
+    # NOT tender documents — sending those to the AI produced ai_error.
+    for a in soup.select("a[href*='get-file']"):
         href = a.get("href", "")
-        if href:
-            data["documents"].append(
-                href if href.startswith("http") else f"{BASE_URL}{href}"
-            )
+        if not href:
+            continue
+        data["documents"].append({
+            "url": href if href.startswith("http") else f"{BASE_URL}{href}",
+            "filename": a.get_text(strip=True) or None,
+        })
 
     # Parse amount if still a string
     if isinstance(data.get("amount"), str):

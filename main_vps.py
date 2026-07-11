@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import random
+import re
 import time
 from pathlib import Path
 
@@ -74,16 +75,32 @@ def _save_checkpoint(data: dict):
 # Document downloader
 # ---------------------------------------------------------------------------
 
-def _download_documents(doc_urls: list[str]) -> list[tuple[str, bytes]]:
+def _download_documents(doc_entries: list) -> list[tuple[str, bytes]]:
+    """Entries are either plain URL strings (icetrade) or {url, filename}
+    dicts (goszakupki get-file links, whose URLs carry no extension — the
+    filename comes from the link text). The AI pipeline picks its parser by
+    filename extension, so a real name matters."""
     results = []
-    for url in doc_urls:
+    for entry in doc_entries:
+        if isinstance(entry, dict):
+            url, filename = entry.get("url"), entry.get("filename")
+        else:
+            url, filename = entry, None
+        if not url:
+            continue
         try:
             resp = requests.get(url, headers=_DOWNLOAD_HEADERS, timeout=60, verify=False)
-            if resp.status_code == 200:
-                filename = url.rsplit("/", 1)[-1].split("?")[0] or "document"
-                results.append((filename, resp.content))
-            else:
+            if resp.status_code != 200:
                 log.warning(f"Download failed {url}: HTTP {resp.status_code}")
+                continue
+            if not filename:
+                cd = resp.headers.get("Content-Disposition", "")
+                m = re.search(r"filename\*?=\"?([^\";]+)", cd)
+                if m:
+                    filename = m.group(1).split("''")[-1].strip()
+            if not filename:
+                filename = url.rsplit("/", 1)[-1].split("?")[0] or "document"
+            results.append((filename, resp.content))
         except Exception as e:
             log.error(f"Download error {url}: {e}")
     return results
