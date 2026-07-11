@@ -62,7 +62,12 @@
     <div class="d-flex gap-3 align-items-center">
 
       <div class="flex-grow-1" style="min-width:0;">
-        <div class="tender-title">{{ t.title or 'Без названия' }}</div>
+        <div class="tender-title">
+          {{ t.title or 'Без названия' }}
+          {% if t.status == 'submitted' %}
+            <span class="pill pill-green" style="font-size:.72rem; vertical-align:2px;">заявка подана</span>
+          {% endif %}
+        </div>
         <div class="tender-meta">
           {% if t.region %}
           <span>

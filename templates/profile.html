@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% set active_tab = "profile" %}
+{% block title %}Профиль компании{% endblock %}
+
+{% block content %}
+
+<div style="max-width:720px; margin:0 auto;">
+
+  {% if saved %}
+  <div class="card p-3 mb-4" style="border-left:4px solid var(--good); font-size:.92rem;">
+    ✅ <strong>Профиль сохранён.</strong> Данные будут использованы при формировании пакетов документов.
+  </div>
+  {% endif %}
+
+  <div class="d-flex align-items-center gap-2 mb-1">
+    <h4 class="mb-0">Профиль компании</h4>
+    <span class="pill pill-yellow" style="font-size:.72rem;">конфиденциально</span>
+  </div>
+  <div style="color:var(--muted); font-size:.86rem; margin-bottom:1.25rem;">
+    Реквизиты подставляются в ценовое предложение, техническое предложение и заявку.
+    Данные хранятся только в вашей базе и не передаются третьим сторонам.
+    Доступ к ЭЦП остаётся у директора — бот никогда не подаёт документы сам.
+  </div>
+
+  <form method="post" action="/profile/save">
+    <div class="card p-4 mb-3">
+      <div class="section-label mb-3">Организация</div>
+      <div class="row g-3">
+        <div class="col-md-8">
+          <label class="form-label" style="font-size:.83rem;">Полное наименование</label>
+          <input type="text" name="company_name" class="form-control"
+                 value="{{ profile.company_name or '' }}" placeholder="ООО «СтройПример»">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" style="font-size:.83rem;">УНП</label>
+          <input type="text" name="unp" class="form-control"
+                 value="{{ profile.unp or '' }}" placeholder="190000000">
+        </div>
+        <div class="col-12">
+          <label class="form-label" style="font-size:.83rem;">Юридический адрес</label>
+          <input type="text" name="address" class="form-control"
+                 value="{{ profile.address or '' }}" placeholder="г. Минск, ул. ...">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label" style="font-size:.83rem;">Руководитель (ФИО)</label>
+          <input type="text" name="director" class="form-control"
+                 value="{{ profile.director or '' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" style="font-size:.83rem;">Телефон</label>
+          <input type="text" name="phone" class="form-control"
+                 value="{{ profile.phone or '' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" style="font-size:.83rem;">E-mail</label>
+          <input type="email" name="email" class="form-control"
+                 value="{{ profile.email or '' }}">
+        </div>
+      </div>
+    </div>
+
+    <div class="card p-4 mb-3">
+      <div class="section-label mb-3">Банковские реквизиты</div>
+      <div class="row g-3">
+        <div class="col-md-5">
+          <label class="form-label" style="font-size:.83rem;">Банк</label>
+          <input type="text" name="bank_name" class="form-control"
+                 value="{{ profile.bank_name or '' }}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" style="font-size:.83rem;">Расчётный счёт (IBAN)</label>
+          <input type="text" name="bank_account" class="form-control"
+                 value="{{ profile.bank_account or '' }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" style="font-size:.83rem;">БИК</label>
+          <input type="text" name="bank_code" class="form-control"
+                 value="{{ profile.bank_code or '' }}">
+        </div>
+      </div>
+    </div>
+
+    <button type="submit" class="btn btn-dark px-4">Сохранить профиль</button>
+  </form>
+
+</div>
+{% endblock %}

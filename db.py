@@ -121,6 +121,16 @@ def init_db():
             )
         """)
 
+        # Company requisites for document generation. SENSITIVE: contains
+        # УНП and bank details — never expose through public API responses,
+        # only through the dashboard profile tab and generated documents.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS company_profile (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
         # Seed default settings (skip if already exist)
         defaults = [
             ("min_budget", "36000"),
@@ -259,11 +269,13 @@ def archive_tender(tender_id: int, marker: str):
 
 
 def get_suitable_tenders(limit: int = 200) -> list[dict]:
+    # 'submitted' stays visible: the user marked those manually and still
+    # wants to see them among the suitable ones (with a badge).
     with _conn() as conn:
         cur = _dict_cursor(conn)
         cur.execute("""
             SELECT * FROM tenders
-            WHERE status = 'suitable'
+            WHERE status IN ('suitable', 'submitted')
             ORDER BY s_score DESC NULLS LAST, created_at DESC
             LIMIT %s
         """, (limit,))
@@ -528,6 +540,48 @@ def update_search_settings(settings: dict):
                 VALUES (%s, %s)
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """, (key, value))
+
+
+# ---------------------------------------------------------------------------
+# Company profile (sensitive — dashboard/docgen use only)
+# ---------------------------------------------------------------------------
+
+COMPANY_PROFILE_FIELDS = [
+    "company_name", "unp", "address", "director",
+    "phone", "email", "bank_name", "bank_account", "bank_code",
+]
+
+
+def get_company_profile() -> dict:
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("SELECT key, value FROM company_profile")
+        rows = {r["key"]: r["value"] for r in cur.fetchall()}
+    return {f: rows.get(f) for f in COMPANY_PROFILE_FIELDS}
+
+
+def update_company_profile(profile: dict):
+    with _conn() as conn:
+        cur = conn.cursor()
+        for key in COMPANY_PROFILE_FIELDS:
+            if key not in profile:
+                continue
+            cur.execute("""
+                INSERT INTO company_profile (key, value)
+                VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """, (key, (profile[key] or "").strip()))
+
+
+def mark_tender_submitted(tender_id: int):
+    """Records the USER's explicit decision — never called automatically
+    (Iron rule: submission itself happens manually with the director's
+    digital signature on the official portal)."""
+    with _conn() as conn:
+        conn.cursor().execute("""
+            UPDATE tenders SET status = 'submitted', updated_at = NOW()
+            WHERE id = %s AND status = 'suitable'
+        """, (tender_id,))
 
 
 # ---------------------------------------------------------------------------

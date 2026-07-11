@@ -1,11 +1,13 @@
 """Flask dashboard — 4 tabs: suitable tenders, price list, settings, AI chat."""
 
+import io
 import json
 
 import anthropic
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 
 import db
+import docgen
 import file_processor
 from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 from logger import get_logger
@@ -88,6 +90,57 @@ def tender_detail(tender_id):
         return "Тендер не найден", 404
     positions = db.get_tender_positions(tender_id)
     return render_template("tender.html", tender=tender, positions=positions)
+
+
+# ---------------------------------------------------------------------------
+# Document package + submit decision (HUMAN IN THE LOOP — see docgen.py)
+# ---------------------------------------------------------------------------
+
+@app.route("/tender/<int:tender_id>/documents", methods=["POST"])
+@rate_limit(10, 60)  # each package may include a Claude draft call
+def tender_documents(tender_id):
+    package = docgen.generate_package(tender_id)
+    if package is None:
+        return "Тендер не найден", 404
+    zip_bytes, filename = package
+    return send_file(
+        io.BytesIO(zip_bytes),
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.route("/tender/<int:tender_id>/submit", methods=["POST"])
+@rate_limit(10, 60)
+def tender_submit(tender_id):
+    # Iron rule 3: only an explicit per-tender confirmation from the user
+    # flips the status, and even then nothing is sent anywhere — actual
+    # submission happens manually with the director's digital signature.
+    if request.form.get("confirm") != "yes":
+        return redirect(url_for("tender_detail", tender_id=tender_id))
+    db.mark_tender_submitted(tender_id)
+    log.info(f"User confirmed submission decision for tender {tender_id}")
+    return redirect(url_for("tender_detail", tender_id=tender_id))
+
+
+# ---------------------------------------------------------------------------
+# Company profile (sensitive)
+# ---------------------------------------------------------------------------
+
+@app.route("/profile")
+def profile():
+    saved = request.args.get("saved")
+    return render_template("profile.html", profile=db.get_company_profile(), saved=saved)
+
+
+@app.route("/profile/save", methods=["POST"])
+@rate_limit(10, 60)
+def profile_save():
+    db.update_company_profile({
+        f: request.form.get(f, "") for f in db.COMPANY_PROFILE_FIELDS
+    })
+    return redirect(url_for("profile", saved=1))
 
 
 # ---------------------------------------------------------------------------

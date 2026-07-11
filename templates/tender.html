@@ -10,15 +10,65 @@
 </div>
 
 <!-- Header -->
-<div class="mb-4">
-  <h4 class="mb-1">{{ tender.title or 'Без названия' }}</h4>
-  <div style="color:#666; font-size:.92rem;">
-    {% if tender.region %}📍 {{ tender.region }}{% endif %}
-    {% if tender.deadline %} &nbsp;·&nbsp; 📅 до {{ tender.deadline[:10] }}{% endif %}
-    {% if tender.url %}
-      &nbsp;·&nbsp; <a href="{{ tender.url }}" target="_blank"
-                      style="color:#888; font-size:.85rem;">Открыть на сайте ↗</a>
+<div class="mb-4 d-flex flex-wrap gap-3 justify-content-between align-items-start">
+  <div>
+    <h4 class="mb-1">
+      {{ tender.title or 'Без названия' }}
+      {% if tender.status == 'submitted' %}
+        <span class="pill pill-green" style="vertical-align:middle;">заявка подана</span>
+      {% endif %}
+    </h4>
+    <div style="color:var(--ink-2); font-size:.92rem;">
+      {% if tender.region %}📍 {{ tender.region }}{% endif %}
+      {% if tender.deadline %} &nbsp;·&nbsp; 📅 до {{ tender.deadline[:10] }}{% endif %}
+      {% if tender.url %}
+        &nbsp;·&nbsp; <a href="{{ tender.url }}" target="_blank"
+                        style="color:var(--muted); font-size:.85rem;">Открыть на сайте ↗</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Document actions: generation is on-demand, submission is ALWAYS a
+       manual per-tender decision (see modal below) -->
+  <div class="d-flex gap-2">
+    <form method="post" action="/tender/{{ tender.id }}/documents">
+      <button type="submit" class="btn btn-dark">📄 Подготовить документы</button>
+    </form>
+    {% if tender.status != 'submitted' %}
+    <button type="button" class="btn btn-accent" data-bs-toggle="modal" data-bs-target="#submitModal">
+      Подать
+    </button>
     {% endif %}
+  </div>
+</div>
+
+<!-- Submit confirmation modal — Iron rule: explicit per-tender confirmation -->
+<div class="modal fade" id="submitModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="border-radius:14px;">
+      <form method="post" action="/tender/{{ tender.id }}/submit">
+        <div class="modal-header" style="border-color:var(--border);">
+          <div class="modal-title fw-bold">Подтверждение подачи</div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body" style="font-size:.92rem; line-height:1.6;">
+          <p>Бот <strong>не подаёт документы автоматически</strong>. Подача выполняется вами
+          вручную через официальный портал с ЭЦП директора — это требование законодательства РБ
+          и зона ответственности организации.</p>
+          <p class="mb-2">Кнопка ниже только зафиксирует ваше решение по этому тендеру
+          (статус «заявка подана»).</p>
+          <label class="d-flex gap-2 align-items-start" style="cursor:pointer;">
+            <input type="checkbox" required name="confirm" value="yes" class="form-check-input mt-1">
+            <span>Я скачал и проверил пакет документов и подал (или подаю) заявку
+            по этому тендеру самостоятельно</span>
+          </label>
+        </div>
+        <div class="modal-footer" style="border-color:var(--border);">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="submit" class="btn btn-accent">Зафиксировать подачу</button>
+        </div>
+      </form>
+    </div>
   </div>
 </div>
 
