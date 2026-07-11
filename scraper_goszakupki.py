@@ -55,9 +55,9 @@ def _sleep():
     time.sleep(random.uniform(1, 2.5))
 
 
-def _get(url: str):
+def _get(session: requests.Session, url: str):
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=60, verify=False)
+        resp = session.get(url, headers=HEADERS, timeout=60, verify=False)
     except requests.RequestException as e:
         log.error(f"Request error {url}: {e}")
         return None
@@ -145,8 +145,8 @@ def _parse_list_page(soup: BeautifulSoup):
     return rows
 
 
-def _parse_card(url: str) -> dict | None:
-    resp = _get(url)
+def _parse_card(session: requests.Session, url: str) -> dict | None:
+    resp = _get(session, url)
     if resp == "STOP":
         return "STOP"
     if resp is None:
@@ -225,10 +225,18 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
     results = []
     seen = set()
 
+    session = requests.Session()
+    home_resp = _get(session, BASE_URL + "/")
+    if home_resp == "STOP":
+        return results
+    if home_resp is None:
+        log.error("goszakupki: failed to establish session via homepage, aborting")
+        return results
+
     for page in range(1, max_pages + 1):
         url = LIST_URL if page == 1 else f"{LIST_URL}&page={page}"
         log.info(f"goszakupki page {page}: {url}")
-        resp = _get(url)
+        resp = _get(session, url)
         if resp == "STOP":
             break
         if resp is None:
@@ -254,7 +262,7 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
                 break
 
             _sleep()
-            card = _parse_card(row["url"])
+            card = _parse_card(session, row["url"])
             if card == "STOP":
                 return results
             if card is None:
