@@ -279,18 +279,18 @@ _MATCH_PROMPT = """\
     confidence < 0.40            → grey (matched_item и matched_item_id = null)
 
 Верни ТОЛЬКО валидный JSON без пояснений:
-{
+{{
   "matches": [
-    {
+    {{
       "smeta_name": "наименование из сметы",
       "matched_item": "наименование из прайса или null",
       "matched_item_id": 123,
       "confidence": 0.55,
       "match_status": "yellow",
       "reasoning": "lexical(0.35) + category(0.3) + unit(0.0) = 0.65"
-    }
+    }}
   ]
-}
+}}
 """
 
 
@@ -311,10 +311,15 @@ def _step2_match(positions: list[dict], price_items: list[dict]) -> list[dict] |
     )
 
     def attempt():
-        raw = _call_claude(prompt)
+        try:
+            raw = _call_claude(prompt)
+        except Exception as e:
+            log.error(f"Step2 API call failed: {type(e).__name__}: {str(e)}")
+            return None
         data = _parse_json_response(raw)
-        if isinstance(data, dict):
-            return data.get("matches")
+        if isinstance(data, dict) and isinstance(data.get("matches"), list):
+            return data["matches"]
+        log.warning(f"Step2: response did not match expected schema. Raw response: {raw!r}")
         return None
 
     matches = attempt()
@@ -495,7 +500,20 @@ def analyze_tender(tender_id: int, documents: list[tuple[str, bytes]]):
     """
     Full 4-step analysis. Mutates DB state.
     documents = list of (filename, bytes).
+
+    Never raises: any unexpected failure (bad Claude response, parsing bug,
+    etc.) is caught here so the ingest endpoint can still return 200 to the
+    VPS caller instead of a 500 — the VPS has no business retrying our own
+    pipeline bugs.
     """
+    try:
+        _analyze_tender_impl(tender_id, documents)
+    except Exception as e:
+        log.error(f"analyze_tender crashed for tender {tender_id}: {type(e).__name__}: {e}")
+        db.reject_tender(tender_id, "ai_error")
+
+
+def _analyze_tender_impl(tender_id: int, documents: list[tuple[str, bytes]]):
     if not documents:
         log.error(f"No documents for tender {tender_id}")
         db.reject_tender(tender_id, "ai_error")

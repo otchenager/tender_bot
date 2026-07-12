@@ -145,7 +145,7 @@ def _send_tender(tender: dict, documents: list[tuple[str, bytes]]) -> bool:
 
     for attempt in range(3):
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=120)
+            resp = requests.post(url, json=payload, headers=headers, timeout=180)
             if resp.status_code in (200, 201):
                 return True
             log.warning(f"Ingest HTTP {resp.status_code}: {resp.text[:200]}")
