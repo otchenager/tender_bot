@@ -33,8 +33,16 @@ LIST_URL = (
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ru-RU,ru;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Upgrade-Insecure-Requests": "1",
 }
+
+# Filtered search page fetches add a Referer of the homepage — mimics a user
+# navigating from the homepage, which the session-cookie flow already visits
+# first anyway. Detail-page and homepage requests keep the plain HEADERS.
+LIST_HEADERS = {**HEADERS, "Referer": f"{BASE_URL}/"}
 
 # Pagination safety limits — the category has 20k+ pages, we must never
 # crawl blindly. First-ever run bootstraps with a shallow scan; every
@@ -82,6 +90,13 @@ def _sleep():
     time.sleep(random.uniform(1, 2.5))
 
 
+def _sleep_page():
+    """Pause between fetching consecutive result-list pages — mimics a
+    human reading a page before clicking "next", distinct from the
+    per-tender pacing in _sleep()."""
+    time.sleep(random.uniform(2, 5))
+
+
 # Request-layer seam: every HTTP call goes through `transport` so a rotating
 # proxy pool can be plugged in later by swapping in a same-signature callable —
 # parsing logic never talks to `requests` directly. The session argument must
@@ -94,9 +109,9 @@ def _default_transport(url, *, session=None, params=None, headers=None, timeout=
 transport = _default_transport
 
 
-def _get(session: requests.Session, url: str):
+def _get(session: requests.Session, url: str, headers: dict | None = None):
     try:
-        resp = transport(url, session=session, headers=HEADERS, timeout=60)
+        resp = transport(url, session=session, headers=headers or HEADERS, timeout=60)
     except requests.RequestException as e:
         log.error(f"Request error {url}: {e}")
         return None
@@ -398,7 +413,7 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
         last_page = page
         url = LIST_URL if page == 1 else f"{LIST_URL}&page={page}"
         log.info(f"goszakupki page {page}/{page_limit}: {url}")
-        resp = _get(session, url)
+        resp = _get(session, url, headers=LIST_HEADERS)
         if resp == "STOP":
             aborted = True
             break
@@ -492,7 +507,7 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
 
         if hit_checkpoint or aborted:
             break
-        _sleep()
+        _sleep_page()
 
     if not is_first_run and not hit_checkpoint and not aborted and last_page >= page_limit:
         log.warning(

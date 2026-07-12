@@ -11,7 +11,9 @@ import os
 import random
 import re
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 import urllib3
@@ -44,6 +46,13 @@ REGIONS        = [r.strip() for r in os.getenv("REGIONS", "Минская,г. М
 KEYWORDS       = [k.strip().lower() for k in os.getenv("VPS_KEYWORDS", "").split(",") if k.strip()]
 
 CHECKPOINT_FILE = Path(__file__).parent / "checkpoint.json"
+
+MINSK_TZ = ZoneInfo("Europe/Minsk")
+# Real human analysts check tenders more often during Minsk business hours
+# and less often overnight — vary the polling interval accordingly instead
+# of a flat random range around the clock.
+NIGHT_INTERVAL_RANGE = (1800, 3600)  # 23:00-07:00 Minsk
+DAY_INTERVAL_RANGE = (180, 960)      # 07:00-23:00 Minsk
 
 scheduler = BackgroundScheduler()
 
@@ -253,8 +262,14 @@ def _parser_job():
     except Exception as e:
         log.error(f"Parser job error: {e}")
     finally:
-        next_secs = random.randint(180, 960)
-        log.info(f"Next parse in {next_secs}s ({next_secs // 60}m {next_secs % 60}s)")
+        minsk_hour = datetime.now(MINSK_TZ).hour
+        is_night = minsk_hour >= 23 or minsk_hour < 7
+        low, high = NIGHT_INTERVAL_RANGE if is_night else DAY_INTERVAL_RANGE
+        next_secs = random.randint(low, high)
+        log.info(
+            f"Interval mode: {'night' if is_night else 'day'} (Minsk hour={minsk_hour}) — "
+            f"next parse in {next_secs}s ({next_secs // 60}m {next_secs % 60}s)"
+        )
         scheduler.reschedule_job("parser", trigger="interval", seconds=next_secs)
 
 
