@@ -219,10 +219,11 @@ _EXTRACT_PROMPT = """\
 """
 
 
-def _step1_extract(text: str, images: list[str]) -> dict | None:
+def _step1_extract(text: str, images: list[str], tender_id: int) -> dict | None:
     prompt = _EXTRACT_PROMPT + (text if text else "(см. изображение)")
 
     def attempt():
+        log.info(f"Step1 input for tender {tender_id}: doc_text_length={len(text)}, first_300_chars={text[:300]!r}")
         try:
             raw = _call_claude(prompt, images_b64=images if not text else None)
         except Exception as e:
@@ -234,6 +235,7 @@ def _step1_extract(text: str, images: list[str]) -> dict | None:
             if hasattr(e, "body"):
                 log.error(f"Body: {e.body}")
             return None
+        log.info(f"Step1 raw response for tender {tender_id}: {raw[:1000]!r}")
         return _parse_json_response(raw)
 
     data = attempt()
@@ -526,7 +528,7 @@ def _analyze_tender_impl(tender_id: int, documents: list[tuple[str, bytes]]):
         db.reject_tender(tender_id, "ai_error")
         return
 
-    extraction = _step1_extract(text, images)
+    extraction = _step1_extract(text, images, tender_id)
     if extraction is None:
         log.error(f"Step1 extraction failed for tender {tender_id}")
         db.reject_tender(tender_id, "ai_error")

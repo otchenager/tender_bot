@@ -112,7 +112,7 @@ def _init_price_list_from_smeta():
         text, is_scan = file_processor._pdf_to_text(file_bytes)
         images = file_processor._pdf_to_images_b64(file_bytes) if is_scan else []
 
-        extraction = file_processor._step1_extract(text, images)
+        extraction = file_processor._step1_extract(text, images, tender_id=0)
         if not extraction:
             log.error("Failed to extract positions from Vlad's smeta")
             return
