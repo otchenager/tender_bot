@@ -78,6 +78,80 @@ def ingest_tender():
 
 
 # ---------------------------------------------------------------------------
+# Raw ingest endpoint — called by VPS for EVERY non-marketing, active-status
+# tender it sees (no documents). B/R are computed here, live, against
+# whatever search_settings currently say — never against a VPS-side .env
+# snapshot — so a settings change can recover previously filtered rows
+# without re-scraping. See db.classify_raw_budget_region.
+# ---------------------------------------------------------------------------
+
+@app.route("/api/ingest_raw", methods=["POST"])
+@rate_limit(400, 60)  # first-run bootstrap can push hundreds of rows quickly
+def ingest_raw():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+
+    for field in ("external_id", "source"):
+        if not data.get(field):
+            return jsonify({"error": f"missing field: {field}"}), 400
+
+    raw = {
+        "external_id": data["external_id"],
+        "source":      data["source"],
+        "title":       data.get("title"),
+        "url":         data.get("url"),
+        "region":      data.get("region"),
+        "budget_byn":  data.get("budget_byn"),
+        "deadline":    data.get("deadline"),
+        "tender_type": data.get("tender_type"),
+    }
+
+    raw_id = db.save_raw_tender(raw)
+
+    settings = db.get_search_settings()
+    status, reject_reason = db.classify_raw_budget_region(raw, settings)
+    db.update_raw_status(raw_id, status, reject_reason)
+
+    if status == "passed" and not db.tender_exists(raw["external_id"], raw["source"]):
+        log.info(
+            f"Raw tender passed B/R, awaiting document fetch: "
+            f"{raw['external_id']} ({raw['source']})"
+        )
+
+    return jsonify({
+        "status": "ok",
+        "raw_id": raw_id,
+        "raw_status": status,
+        "reject_reason": reject_reason,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Pending document fetches — polled by VPS each parser cycle. Returns raw
+# tenders that passed B/R but have no matching `tenders` row yet (i.e. were
+# never analyzed) so the VPS can fetch their documents and run the normal
+# ingest_tender pipeline.
+# ---------------------------------------------------------------------------
+
+@app.route("/api/pending_documents", methods=["GET"])
+@rate_limit(60, 60)
+def pending_documents():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    source = request.args.get("source", "")
+    if not source:
+        return jsonify({"error": "missing param: source"}), 400
+
+    pending = db.get_pending_document_fetches(source)
+    return jsonify({"pending": pending}), 200
+
+
+# ---------------------------------------------------------------------------
 # Price list initialization from Vlad's smeta
 # ---------------------------------------------------------------------------
 

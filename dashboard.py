@@ -243,6 +243,14 @@ def settings_save():
     except ValueError:
         min_budget = 36000.0
     try:
+        # Defaults to min_budget itself when left blank — same "no behavior
+        # change until consciously set" semantics the VPS .env value used to have.
+        min_budget_single_source = float(
+            request.form.get("min_budget_single_source") or min_budget
+        )
+    except ValueError:
+        min_budget_single_source = min_budget
+    try:
         x_threshold = float(request.form.get("x_threshold", 30))
     except ValueError:
         x_threshold = 30.0
@@ -251,12 +259,14 @@ def settings_save():
     except ValueError:
         y_threshold = 5.0
 
-    db.update_search_settings({
+    new_settings = {
         "min_budget": min_budget,
+        "min_budget_single_source": min_budget_single_source,
         "x_threshold": x_threshold,
         "y_threshold": y_threshold,
         "regions": regions,
-    })
+    }
+    db.update_search_settings(new_settings)
 
     # Correctness over speed: results computed under the OLD parameters must
     # not linger. Re-score every formula-decided tender under the new
@@ -266,6 +276,14 @@ def settings_save():
     except Exception as e:
         log.error(f"Rescore after settings save failed: {e}")
         stats = {"suitable": 0, "rejected": 0, "archived": 0}
+
+    # Same idea for tenders_raw: rows filtered_out under the OLD budget/region
+    # can flip to passed instantly, with no re-scraping.
+    try:
+        raw_stats = db.recompute_all_raw_BR(db.get_search_settings())
+        log.info(f"Raw recompute after settings save: {raw_stats}")
+    except Exception as e:
+        log.error(f"Raw recompute after settings save failed: {e}")
 
     return redirect(url_for("settings", saved=1, **stats))
 

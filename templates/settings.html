@@ -61,6 +61,19 @@
 
         <div class="mb-4">
           <div class="d-flex justify-content-between align-items-baseline mb-1">
+            <div class="section-label">Мин. бюджет — закупки из одного источника</div>
+          </div>
+          <input type="number" class="form-control" name="min_budget_single_source" min="0" step="100"
+                 value="{{ settings.min_budget_single_source | int }}"
+                 onchange="schedulePreview()">
+          <div style="font-size:.78rem; color:var(--muted); margin-top:.3rem;">
+            Отдельный порог для процедур goszakupki «из одного источника» — обычно это
+            материалы и мелкие работы (500–30000 BYN), общий порог их бы отсекал
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <div class="d-flex justify-content-between align-items-baseline mb-1">
             <div class="section-label">Порог релевантности X</div>
             <div style="font-weight:700;"><span id="x-out">{{ settings.x_threshold | int }}</span>%</div>
           </div>

@@ -121,6 +121,30 @@ def init_db():
             )
         """)
 
+        # Everything the VPS scraper sees (minus marketing-type/inactive-lot
+        # placeholders it already drops) lands here first, unfiltered by
+        # budget/region. B/R are computed live against search_settings —
+        # see classify_raw_budget_region() — so loosening a threshold in the
+        # UI can recover previously-filtered rows without re-scraping.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tenders_raw (
+                id            SERIAL PRIMARY KEY,
+                external_id   TEXT NOT NULL,
+                source        TEXT NOT NULL,
+                title         TEXT,
+                url           TEXT,
+                region        TEXT,
+                budget_byn    FLOAT,
+                deadline      TEXT,
+                tender_type   TEXT,
+                status        TEXT DEFAULT 'raw',
+                reject_reason TEXT,
+                created_at    TIMESTAMPTZ DEFAULT NOW(),
+                updated_at    TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(external_id, source)
+            )
+        """)
+
         # Company requisites for document generation. SENSITIVE: contains
         # УНП and bank details — never expose through public API responses,
         # only through the dashboard profile tab and generated documents.
@@ -134,6 +158,11 @@ def init_db():
         # Seed default settings (skip if already exist)
         defaults = [
             ("min_budget", "36000"),
+            # Separate floor for goszakupki single-source purchases (materials,
+            # small works are often 500-30000 BYN) — see classify_raw_budget_region().
+            # Defaults equal to min_budget, i.e. behavior does not change until
+            # the contractor consciously lowers it in the settings UI.
+            ("min_budget_single_source", "36000"),
             ("x_threshold", "30"),
             ("y_threshold", "5"),
             ("regions", json.dumps(["Минская", "г. Минск"])),
@@ -530,6 +559,9 @@ def get_search_settings() -> dict:
         rows = {r["key"]: r["value"] for r in cur.fetchall()}
     return {
         "min_budget": float(rows.get("min_budget", 36000)),
+        "min_budget_single_source": float(
+            rows.get("min_budget_single_source", rows.get("min_budget", 36000))
+        ),
         "x_threshold": float(rows.get("x_threshold", 30)),
         "y_threshold": float(rows.get("y_threshold", 5)),
         "regions": json.loads(rows.get("regions", '["Минская","г. Минск"]')),
@@ -555,6 +587,133 @@ def update_search_settings(settings: dict):
                 VALUES (%s, %s)
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """, (key, value))
+
+
+# ---------------------------------------------------------------------------
+# Raw tenders (everything the VPS scrapes, pre-B/R — see /api/ingest_raw)
+# ---------------------------------------------------------------------------
+
+def save_raw_tender(tender: dict) -> int:
+    """Upsert by (external_id, source). Does not touch status/reject_reason —
+    the caller classifies separately (see classify_raw_budget_region), since
+    an update here can arrive from a fresh scrape of a row already classified."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO tenders_raw
+                (external_id, source, title, url, region, budget_byn, deadline, tender_type)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (external_id, source) DO UPDATE SET
+                title = EXCLUDED.title,
+                url = EXCLUDED.url,
+                region = EXCLUDED.region,
+                budget_byn = EXCLUDED.budget_byn,
+                deadline = EXCLUDED.deadline,
+                tender_type = EXCLUDED.tender_type,
+                updated_at = NOW()
+            RETURNING id
+        """, (
+            tender["external_id"],
+            tender["source"],
+            tender.get("title"),
+            tender.get("url"),
+            tender.get("region"),
+            tender.get("budget_byn"),
+            tender.get("deadline"),
+            tender.get("tender_type"),
+        ))
+        return cur.fetchone()[0]
+
+
+def get_all_raw_tenders() -> list[dict]:
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("SELECT * FROM tenders_raw ORDER BY created_at DESC")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_raw_by_status(status: str) -> list[dict]:
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            "SELECT * FROM tenders_raw WHERE status = %s ORDER BY created_at DESC",
+            (status,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def update_raw_status(raw_id: int, status: str, reject_reason: str | None = None):
+    with _conn() as conn:
+        conn.cursor().execute("""
+            UPDATE tenders_raw
+            SET status = %s, reject_reason = %s, updated_at = NOW()
+            WHERE id = %s
+        """, (status, reject_reason, raw_id))
+
+
+def classify_raw_budget_region(row: dict, settings: dict) -> tuple[str, str | None]:
+    """B/R against CURRENT search_settings — shared by /api/ingest_raw (one
+    row, right after scraping) and recompute_all_raw_BR (every row, right
+    after a settings save). Budget floor is per procedure type: goszakupki
+    single-source purchases (materials, small works) get their own,
+    typically lower, floor — see min_budget_single_source in get_search_settings."""
+    budget = row.get("budget_byn") or 0
+    min_budget = (
+        settings.get("min_budget_single_source")
+        if row.get("tender_type") == "single-source"
+        else settings.get("min_budget")
+    )
+    if budget < float(min_budget or 0):
+        return "filtered_out", "budget"
+
+    regions = settings.get("regions") or []
+    if regions and row.get("region") not in regions:
+        return "filtered_out", "region"
+
+    return "passed", None
+
+
+def recompute_all_raw_BR(settings: dict) -> dict:
+    """Re-classify every tenders_raw row against the settings just saved —
+    run this on every settings save so a loosened threshold instantly
+    recovers previously filtered_out rows, with no re-scraping."""
+    stats = {"passed": 0, "filtered_out": 0}
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("SELECT id, budget_byn, region, tender_type FROM tenders_raw")
+        rows = [dict(r) for r in cur.fetchall()]
+
+        cur2 = conn.cursor()
+        for row in rows:
+            status, reason = classify_raw_budget_region(row, settings)
+            stats[status] += 1
+            cur2.execute("""
+                UPDATE tenders_raw
+                SET status = %s, reject_reason = %s, updated_at = NOW()
+                WHERE id = %s
+            """, (status, reason, row["id"]))
+
+    log.info(f"recompute_all_raw_BR: {stats}")
+    return stats
+
+
+def get_pending_document_fetches(source: str) -> list[dict]:
+    """Raw tenders that passed B/R but have no matching row yet in `tenders`
+    (i.e. documents were never fetched/analyzed) — polled by the VPS."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("""
+            SELECT r.external_id, r.source, r.title, r.url, r.region,
+                   r.budget_byn, r.deadline, r.tender_type
+            FROM tenders_raw r
+            WHERE r.status = 'passed' AND r.source = %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM tenders t
+                  WHERE t.external_id = r.external_id AND t.source = r.source
+              )
+            ORDER BY r.created_at ASC
+        """, (source,))
+        return [dict(r) for r in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +776,7 @@ def get_search_settings_as_text() -> str:
     s = get_search_settings()
     return (
         f"Минимальный бюджет: {s['min_budget']} BYN\n"
+        f"Минимальный бюджет (закупки из одного источника): {s['min_budget_single_source']} BYN\n"
         f"Порог релевантности X: {s['x_threshold']}%\n"
         f"Минимальная маржа Y: {s['y_threshold']}%\n"
         f"Регионы: {', '.join(s['regions'])}"

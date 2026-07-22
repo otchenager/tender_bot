@@ -2,7 +2,14 @@
 VPS entry point: scraper + APScheduler only.
 No Flask, no PostgreSQL, no AI agent.
 
-Filters I/B/R in Python, downloads documents, POSTs to Railway.
+"Dumb" by design: only knows tender TYPE (skip marketing placeholders) and
+LOT STATUS (skip inactive/closed lots — checked fresh every scrape, inside
+the scraper modules). Every other decision — budget (B), region (R), and
+later scoring — is Railway's job, computed live against whatever
+search_settings currently say. Every non-skipped tender is POSTed raw to
+/api/ingest_raw; Railway tells itself (via tenders_raw) which ones are
+worth fetching documents for, and this process polls /api/pending_documents
+each cycle to find out.
 """
 
 import base64
@@ -32,18 +39,6 @@ log = get_logger("main_vps")
 
 RAILWAY_URL    = os.getenv("RAILWAY_URL", "").rstrip("/")
 INGEST_API_KEY = os.getenv("INGEST_API_KEY", "")
-MIN_BUDGET     = float(os.getenv("MIN_BUDGET", "36000"))
-# Budget-threshold tradeoff: 36000 BYN fits capital-repair contracts, but
-# goszakupki "single-source" procedures are mostly material/small-work
-# purchases in the 500–30000 BYN range — one global floor silently drops
-# them all. Lowering the global floor instead would flood the AI pipeline
-# (Claude cost + noise) with small tenders from every procedure type, so
-# single-source gets its own configurable floor. Default equals MIN_BUDGET,
-# i.e. behavior does NOT change until the operator consciously sets
-# MIN_BUDGET_SINGLE_SOURCE in .env (e.g. 500 to admit material purchases).
-MIN_BUDGET_SINGLE_SOURCE = float(os.getenv("MIN_BUDGET_SINGLE_SOURCE", str(MIN_BUDGET)))
-REGIONS        = [r.strip() for r in os.getenv("REGIONS", "Минская,г. Минск").split(",") if r.strip()]
-KEYWORDS       = [k.strip().lower() for k in os.getenv("VPS_KEYWORDS", "").split(",") if k.strip()]
 
 CHECKPOINT_FILE = Path(__file__).parent / "checkpoint.json"
 
@@ -116,6 +111,45 @@ def _download_documents(doc_entries: list) -> list[tuple[str, bytes]]:
 
 
 # ---------------------------------------------------------------------------
+# Railway raw-ingest sender (retry × 3) — every non-skipped tender, no docs.
+# Railway decides B/R against live search_settings and stores the verdict in
+# tenders_raw; this process never sees that verdict directly (it finds out
+# what to fetch documents for via /api/pending_documents instead).
+# ---------------------------------------------------------------------------
+
+def _send_raw_tender(tender: dict) -> bool:
+    payload = {
+        "external_id": tender["external_id"],
+        "source":      tender["source"],
+        "title":       tender.get("title"),
+        "url":         tender.get("url"),
+        "region":      tender.get("region"),
+        "budget_byn":  tender.get("budget_byn"),
+        "deadline":    tender.get("deadline"),
+        "tender_type": tender.get("tender_type"),
+    }
+
+    headers = {
+        "X-API-Key":    INGEST_API_KEY,
+        "Content-Type": "application/json",
+    }
+    url = f"{RAILWAY_URL}/api/ingest_raw"
+
+    for attempt in range(3):
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code in (200, 201):
+                return True
+            log.warning(f"Ingest_raw HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            log.error(f"Send_raw attempt {attempt + 1} failed: {e}")
+        if attempt < 2:
+            time.sleep(5)
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Railway ingest sender (retry × 3)
 # ---------------------------------------------------------------------------
 
@@ -158,6 +192,67 @@ def _send_tender(tender: dict, documents: list[tuple[str, bytes]]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Pending document fetches — Railway tells us, via tenders_raw, which raw
+# tenders passed live B/R and still need documents fetched + the full
+# ingest_tender pipeline. Reuses the existing document downloader and
+# _send_tender() as-is.
+# ---------------------------------------------------------------------------
+
+def _fetch_and_send_pending_documents():
+    for source_name, scraper_module, _checkpoint_key, _max_pages in SOURCES:
+        try:
+            resp = requests.get(
+                f"{RAILWAY_URL}/api/pending_documents",
+                params={"source": source_name},
+                headers={"X-API-Key": INGEST_API_KEY},
+                timeout=60,
+            )
+            if resp.status_code != 200:
+                log.warning(f"pending_documents HTTP {resp.status_code} for {source_name}")
+                continue
+            pending = resp.json().get("pending", [])
+        except Exception as e:
+            log.error(f"pending_documents fetch error for {source_name}: {e}")
+            continue
+
+        if not pending:
+            continue
+        log.info(f"{source_name}: {len(pending)} pending document fetch(es)")
+
+        # goszakupki's detail-card parser needs a session bootstrapped via
+        # the homepage first (session-cookie flow) — same as fetch_tenders().
+        session = None
+        if source_name == "goszakupki":
+            session = requests.Session()
+            home = scraper_goszakupki._get(session, scraper_goszakupki.BASE_URL + "/")
+            if home is None or home == "STOP":
+                log.error(f"{source_name}: failed session bootstrap for pending doc fetch")
+                continue
+
+        for row in pending:
+            ext_id = row["external_id"]
+            url = row.get("url")
+            if not url:
+                continue
+
+            try:
+                if source_name == "goszakupki":
+                    card = scraper_goszakupki._parse_card(session, url)
+                    doc_urls = card.get("documents", []) if isinstance(card, dict) else []
+                else:
+                    numeric_id = ext_id.split("_", 1)[-1]
+                    card = scraper_icetrade._parse_card(numeric_id)
+                    doc_urls = card.get("documents", []) if card else []
+            except Exception as e:
+                log.error(f"pending doc card fetch error {ext_id}: {e}")
+                continue
+
+            documents = _download_documents(doc_urls)
+            ok = _send_tender(row, documents)
+            log.info(f"  → pending doc {'sent' if ok else 'FAILED to send'}: {ext_id}")
+
+
+# ---------------------------------------------------------------------------
 # Main parse-and-send round
 # ---------------------------------------------------------------------------
 
@@ -195,59 +290,36 @@ def parse_and_send():
         log.info(f"{source_name}: fetched {len(raw_tenders)} tenders")
 
         skipped_type_count = 0
-        passed_count = 0
+        sent_count = 0
         for raw in raw_tenders:
             ext_id = raw["external_id"]
 
             # Tenders the scraper flagged as not real procurements
             # (e.g. goszakupki "marketing" type) — placeholder only, skip.
+            # Lot-status filtering (inactive/closed) already happened inside
+            # the scraper itself, checked fresh this cycle.
             if raw.get("_skip"):
                 skipped_type_count += 1
                 continue
 
-            # Filter I — keyword match
-            title = (raw.get("title") or "").lower()
-            if KEYWORDS and not any(kw in title for kw in KEYWORDS):
-                log.info(f"  → failed_I: {ext_id}")
-                continue
-
-            # Filter B — minimum budget (per procedure type, see comment at
-            # MIN_BUDGET_SINGLE_SOURCE above)
-            budget = raw.get("budget_byn") or 0
-            min_budget = (
-                MIN_BUDGET_SINGLE_SOURCE
-                if raw.get("tender_type") == "single-source"
-                else MIN_BUDGET
-            )
-            if budget < min_budget:
-                log.info(f"  → failed_B: {ext_id} (budget={budget}, floor={min_budget})")
-                continue
-
-            # Filter R — region
-            region = raw.get("region")
-            if region not in REGIONS:
-                log.info(f"  → failed_R: {ext_id} (region={region!r})")
-                continue
-
-            passed_count += 1
-            log.info(f"  → passed I/B/R: {ext_id}, downloading docs")
-            documents = _download_documents(raw.get("doc_urls", []))
-
-            ok = _send_tender(raw, documents)
-            log.info(f"  → {'sent' if ok else 'FAILED to send'}: {ext_id}")
+            sent_count += 1
+            ok = _send_raw_tender(raw)
+            log.info(f"  → raw {'sent' if ok else 'FAILED to send'}: {ext_id}")
 
         # Advance checkpoint to the newest seen id (first in list = most recent)
         new_checkpoint = raw_tenders[0]["external_id"] if raw_tenders else last_id
 
         log.info(
             f"{source_name} summary: fetched={len(raw_tenders)}, "
-            f"skipped_by_type={skipped_type_count}, passed_I/B/R={passed_count}, "
+            f"skipped_by_type={skipped_type_count}, sent_raw={sent_count}, "
             f"checkpoint={new_checkpoint or 'none'}"
         )
 
         if new_checkpoint != last_id:
             checkpoint[checkpoint_key] = new_checkpoint
             _save_checkpoint(checkpoint)
+
+    _fetch_and_send_pending_documents()
 
     log.info("=== Parser round complete ===")
 
