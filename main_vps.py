@@ -18,7 +18,7 @@ import os
 import random
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -323,6 +323,115 @@ def _fetch_and_send_pending_documents():
 
 
 # ---------------------------------------------------------------------------
+# Freshness revalidation — a tender's active/closed status on the source
+# site can change after we've already stored it (and possibly shown it to
+# the contractor as 'suitable'). Only runs every REVALIDATE_EVERY_N_ROUNDS
+# parser cycles: unlike raw-ingest/pending-fetch, staleness here is a
+# slow-moving concern (deadlines are days/weeks out), so hourly-ish
+# checking is plenty and keeps this extra detail-page traffic light on top
+# of the normal scrape + pending-fetch load. Capped and paced the same way
+# as the pending-document fetch, for the same reasons (see above).
+# ---------------------------------------------------------------------------
+
+REVALIDATE_EVERY_N_ROUNDS = 10
+REVALIDATE_CAP = 15
+
+
+def revalidate_active_tenders():
+    try:
+        resp = requests.get(
+            f"{RAILWAY_URL}/api/tenders_to_revalidate",
+            headers={"X-API-Key": INGEST_API_KEY},
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            log.warning(f"tenders_to_revalidate HTTP {resp.status_code}")
+            return
+        candidates = resp.json().get("tenders", [])
+    except Exception as e:
+        log.error(f"tenders_to_revalidate fetch error: {e}")
+        return
+
+    if not candidates:
+        return
+
+    backlog_total = len(candidates)
+    candidates = candidates[:REVALIDATE_CAP]
+    log.info(f"revalidation: {backlog_total} candidate(s) (checking {len(candidates)} this round)")
+
+    goszakupki_session = None
+
+    for row in candidates:
+        source_name = row.get("source")
+        ext_id = row.get("external_id")
+        url = row.get("url")
+        if not ext_id or not url:
+            continue
+
+        try:
+            if source_name == "goszakupki":
+                if goszakupki_session is None:
+                    goszakupki_session = requests.Session()
+                    home = scraper_goszakupki._get(goszakupki_session, scraper_goszakupki.BASE_URL + "/")
+                    if home is None or home == "STOP":
+                        log.error("revalidation: goszakupki session bootstrap failed, abandoning goszakupki rows this round")
+                        goszakupki_session = False
+                if goszakupki_session is False:
+                    continue
+
+                scraper_goszakupki._sleep()
+                card = scraper_goszakupki._parse_card(goszakupki_session, url)
+                if card == "STOP":
+                    log.warning("revalidation: STOP mid-batch (CAPTCHA/403), abandoning rest of backlog this round")
+                    break
+                if not isinstance(card, dict):
+                    continue
+                still_active = bool(card.get("_active_lot", True))
+
+            elif source_name == "icetrade":
+                scraper_icetrade._sleep()
+                numeric_id = ext_id.split("_", 1)[-1]
+                card = scraper_icetrade._parse_card(numeric_id)
+                if not card:
+                    continue
+                still_active = bool(card.get("_active", True))
+
+            else:
+                continue
+        except Exception as e:
+            log.error(f"revalidation card fetch error {ext_id}: {e}")
+            continue
+
+        checked_at = datetime.now(timezone.utc).isoformat()
+        ok = _send_freshness_update(ext_id, source_name, still_active, checked_at)
+        log.info(
+            f"  → revalidated {ext_id}: still_active={still_active} "
+            f"({'sent' if ok else 'FAILED to send'})"
+        )
+
+
+def _send_freshness_update(external_id: str, source: str, still_active: bool, checked_at: str) -> bool:
+    payload = {
+        "external_id": external_id,
+        "source": source,
+        "still_active": still_active,
+        "checked_at": checked_at,
+    }
+    headers = {"X-API-Key": INGEST_API_KEY, "Content-Type": "application/json"}
+    try:
+        resp = requests.post(
+            f"{RAILWAY_URL}/api/update_tender_freshness",
+            json=payload, headers=headers, timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            return True
+        log.warning(f"update_tender_freshness HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        log.error(f"update_tender_freshness error for {external_id}: {e}")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Main parse-and-send round
 # ---------------------------------------------------------------------------
 
@@ -335,7 +444,11 @@ SOURCES = [
 ]
 
 
+_round_counter = 0
+
+
 def parse_and_send():
+    global _round_counter
     log.info("=== Parser round started ===")
     _log_rss("at round start")
     checkpoint = _load_checkpoint()
@@ -394,6 +507,11 @@ def parse_and_send():
 
     _fetch_and_send_pending_documents()
     _log_rss("after pending-document fetch")
+
+    _round_counter += 1
+    if _round_counter % REVALIDATE_EVERY_N_ROUNDS == 0:
+        revalidate_active_tenders()
+        _log_rss("after revalidation")
 
     log.info("=== Parser round complete ===")
 

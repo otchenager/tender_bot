@@ -152,6 +152,46 @@ def pending_documents():
 
 
 # ---------------------------------------------------------------------------
+# Tender freshness revalidation — a tender's active/closed status on the
+# source site can change after ingest; VPS polls this each cycle (or every
+# Nth cycle) and reports back what it found for each candidate.
+# ---------------------------------------------------------------------------
+
+@app.route("/api/tenders_to_revalidate", methods=["GET"])
+@rate_limit(60, 60)
+def tenders_to_revalidate():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    tenders = db.get_tenders_to_revalidate()
+    return jsonify({"tenders": tenders}), 200
+
+
+@app.route("/api/update_tender_freshness", methods=["POST"])
+@rate_limit(60, 60)
+def update_tender_freshness():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    for field in ("external_id", "source"):
+        if not data.get(field):
+            return jsonify({"error": f"missing field: {field}"}), 400
+    if "still_active" not in data:
+        return jsonify({"error": "missing field: still_active"}), 400
+
+    db.update_tender_freshness(
+        data["external_id"],
+        data["source"],
+        bool(data["still_active"]),
+        data.get("checked_at"),
+    )
+    return jsonify({"status": "ok"}), 200
+
+
+# ---------------------------------------------------------------------------
 # Price list initialization from Vlad's smeta
 # ---------------------------------------------------------------------------
 

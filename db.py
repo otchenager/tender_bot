@@ -87,10 +87,18 @@ def init_db():
                 m_score       FLOAT,
                 s_score       FLOAT,
                 ai_comment    TEXT,
+                last_status_check TIMESTAMPTZ,
                 created_at    TIMESTAMPTZ DEFAULT NOW(),
                 updated_at    TIMESTAMPTZ DEFAULT NOW(),
                 UNIQUE(external_id, source)
             )
+        """)
+
+        # Migration for pre-existing installations: CREATE TABLE IF NOT
+        # EXISTS above only takes effect on a fresh table, so an already-
+        # deployed `tenders` table needs this column added explicitly.
+        cur.execute("""
+            ALTER TABLE tenders ADD COLUMN IF NOT EXISTS last_status_check TIMESTAMPTZ
         """)
 
         cur.execute("""
@@ -714,6 +722,59 @@ def get_pending_document_fetches(source: str) -> list[dict]:
             ORDER BY r.created_at ASC
         """, (source,))
         return [dict(r) for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Tender freshness revalidation — a tender's active/closed status on the
+# source site can change after we've already stored it (and possibly shown
+# it to the contractor as 'suitable'); this periodically re-checks it.
+# ---------------------------------------------------------------------------
+
+def get_tenders_to_revalidate() -> list[dict]:
+    """Still-actionable tenders (suitable/submitted) whose deadline hasn't
+    passed yet — these are worth periodically re-checking against the live
+    site, unlike already-rejected/archived tenders the contractor won't see.
+    The deadline regex guards the cast: deadline is TEXT and can hold
+    non-ISO text when the scraper's own date parsing failed."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(r"""
+            SELECT external_id, source, url
+            FROM tenders
+            WHERE status IN ('suitable', 'submitted')
+              AND url IS NOT NULL AND url != ''
+              AND deadline IS NOT NULL
+              AND deadline ~ '^\d{4}-\d{2}-\d{2}'
+              AND deadline::timestamptz > NOW()
+            ORDER BY updated_at ASC
+        """)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def update_tender_freshness(external_id: str, source: str, still_active: bool,
+                             checked_at: str | None = None):
+    """Applies one revalidation result. still_active=False flips the tender
+    to archived (the source site no longer shows it as open) instead of
+    silently deleting it, so the contractor can see it was pulled and why.
+    last_status_check is stamped either way — that's the point of this
+    function even when nothing else changes."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        if still_active:
+            cur.execute("""
+                UPDATE tenders
+                SET last_status_check = COALESCE(%s, NOW())
+                WHERE external_id = %s AND source = %s
+            """, (checked_at, external_id, source))
+        else:
+            cur.execute("""
+                UPDATE tenders
+                SET status = 'archived',
+                    reject_reason = 'status_changed_after_ingest',
+                    last_status_check = COALESCE(%s, NOW()),
+                    updated_at = NOW()
+                WHERE external_id = %s AND source = %s
+            """, (checked_at, external_id, source))
 
 
 # ---------------------------------------------------------------------------
