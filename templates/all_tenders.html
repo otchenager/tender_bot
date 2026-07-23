@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+{% set active_tab = "all_tenders" %}
+{% block title %}Все тендеры{% endblock %}
+
+{% block content %}
+
+{% set reject_labels = {
+  'budget': 'Бюджет мал',
+  'region': 'Не наш регион',
+  'keyword': 'Нет ключевого слова в смете',
+  'failed_K': 'Мало совпадений (K)',
+  'failed_L': 'Низкая релевантность (L)',
+  'failed_M': 'Низкая маржа (M)',
+  'ai_error': 'Ошибка AI',
+  'status_changed_after_ingest': 'Закрыто на сайте',
+} %}
+
+{% set type_labels = {
+  'etrade': 'Открытый конкурс',
+  'limited': 'С ограниченным участием',
+  'single-source': 'Из одного источника',
+  'request': 'Запрос предложений',
+} %}
+
+{% set status_labels = {
+  'queued': 'В очереди на анализ',
+  'suitable': 'Подходит',
+  'rejected': 'Отклонён',
+  'archived': 'Закрыт на сайте',
+} %}
+
+{% macro status_row_class(s) -%}
+  {%- if s == 'suitable' -%}row-green
+  {%- elif s == 'rejected' -%}row-red
+  {%- elif s == 'archived' -%}row-grey
+  {%- elif s == 'queued' -%}row-queued
+  {%- else -%}{%- endif -%}
+{%- endmacro %}
+
+<div class="d-flex align-items-baseline justify-content-between flex-wrap gap-2 mb-3">
+  <h4 class="mb-1">Все тендеры
+    <span style="font-weight:500; color:var(--muted); font-size:1rem;">
+      (<span id="visible-count">{{ rows|length }}</span> из {{ rows|length }})
+    </span>
+  </h4>
+</div>
+
+<div class="row g-4">
+  <!-- Filters -->
+  <div class="col-lg-3">
+    <div class="card p-3" style="position:sticky; top:76px;">
+      <div class="section-label mb-2">Показ</div>
+      <label class="d-flex align-items-center gap-2 mb-2" style="font-size:.88rem; cursor:pointer;">
+        <input type="checkbox" id="only-suitable" onchange="applyFiltersAndSort()">
+        Только подходящие
+      </label>
+      <label class="d-flex align-items-center gap-2 mb-3" style="font-size:.88rem; cursor:pointer;">
+        <input type="checkbox" id="show-archived" checked onchange="applyFiltersAndSort()">
+        Показывать закрытые на сайте
+      </label>
+
+      <div class="section-label mb-2">Сортировка</div>
+      <select id="sort-select" class="form-select form-select-sm mb-3" onchange="applyFiltersAndSort()">
+        <option value="s_desc">Балл S (по убыванию)</option>
+        <option value="deadline_asc">Дедлайн (ближайшие)</option>
+        <option value="budget_desc">Бюджет (по убыванию)</option>
+        <option value="created_desc">Дата добавления (новые)</option>
+      </select>
+
+      <div class="section-label mb-2">Регион</div>
+      <div class="d-flex flex-wrap gap-1 mb-3">
+        {% for region in all_regions %}
+        <label class="region-chip">
+          <input type="checkbox" class="region-filter" value="{{ region }}" onchange="applyFiltersAndSort()">
+          <span style="font-size:.78rem; padding:4px 10px;">{{ region }}</span>
+        </label>
+        {% endfor %}
+      </div>
+
+      <div class="section-label mb-2">Тип процедуры</div>
+      <select id="type-filter" class="form-select form-select-sm mb-3" onchange="applyFiltersAndSort()">
+        <option value="">Любой</option>
+        {% for code, label in type_labels.items() %}
+        <option value="{{ code }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+
+      <div class="section-label mb-2">Бюджет, BYN</div>
+      <div class="d-flex gap-2 mb-3">
+        <input type="number" id="budget-min" class="form-control form-control-sm" placeholder="от" oninput="applyFiltersAndSort()">
+        <input type="number" id="budget-max" class="form-control form-control-sm" placeholder="до" oninput="applyFiltersAndSort()">
+      </div>
+
+      <div class="section-label mb-2">Мин. маржа M, %</div>
+      <div style="font-size:.78rem; color:var(--muted); margin-bottom:.3rem;">
+        Не применяется к тендерам без оценки (в очереди / отклонённым)
+      </div>
+      <input type="number" id="margin-min" class="form-control form-control-sm mb-3" placeholder="напр. 10" oninput="applyFiltersAndSort()">
+
+      <div class="section-label mb-2">Причина отказа</div>
+      <div class="d-flex flex-column gap-1 mb-3">
+        {% for code, label in reject_labels.items() %}
+        <label class="d-flex align-items-center gap-2" style="font-size:.84rem; cursor:pointer;">
+          <input type="checkbox" class="reject-filter" value="{{ code }}" onchange="applyFiltersAndSort()">
+          {{ label }}
+        </label>
+        {% endfor %}
+      </div>
+
+      <div class="section-label mb-2">Период</div>
+      <select id="date-field" class="form-select form-select-sm mb-2" onchange="applyFiltersAndSort()">
+        <option value="created">Дата добавления</option>
+        <option value="deadline">Дедлайн</option>
+      </select>
+      <div class="d-flex gap-2">
+        <input type="date" id="date-from" class="form-control form-control-sm" onchange="applyFiltersAndSort()">
+        <input type="date" id="date-to" class="form-control form-control-sm" onchange="applyFiltersAndSort()">
+      </div>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="col-lg-9">
+    <div class="card">
+      <div class="table-responsive">
+        <table class="table mb-0" id="tenders-table">
+          <thead>
+            <tr>
+              <th style="padding:.7rem 1rem;">Название</th>
+              <th>Тип</th>
+              <th>Бюджет</th>
+              <th>Регион</th>
+              <th>Дедлайн</th>
+              <th>S</th>
+              <th>Статус</th>
+              <th>Проверено</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in rows %}
+            <tr class="{{ status_row_class(t.display_status) }}"
+                data-status="{{ t.display_status }}"
+                data-region="{{ t.region or '' }}"
+                data-type="{{ t.tender_type or '' }}"
+                data-budget="{{ t.budget_byn if t.budget_byn is not none else '' }}"
+                data-margin="{{ t.m_score if t.has_score else '' }}"
+                data-has-score="{{ '1' if t.has_score else '0' }}"
+                data-s="{{ t.s_score if t.has_score else '' }}"
+                data-reject="{{ t.reject_reason or '' }}"
+                data-created="{{ t.created_at or '' }}"
+                data-deadline="{{ t.deadline or '' }}">
+              <td style="padding:.7rem 1rem; max-width:340px;">
+                <a href="{{ t.url }}" target="_blank" rel="noopener" style="font-weight:600; color:var(--ink); text-decoration:none;">
+                  {{ t.title or 'Без названия' }}
+                </a>
+              </td>
+              <td style="font-size:.86rem; white-space:nowrap;">{{ type_labels.get(t.tender_type, t.tender_type or '—') }}</td>
+              <td style="font-size:.86rem; white-space:nowrap;">{{ t.budget_byn | fmt_money }}</td>
+              <td style="font-size:.86rem; white-space:nowrap;">{{ t.region or '—' }}</td>
+              <td style="font-size:.86rem; white-space:nowrap;">{{ t.deadline | fmt_days_remaining }}</td>
+              <td style="font-size:.86rem;">
+                {% if t.has_score %}{{ "%.0f" | format(t.s_score * 100) }}{% else %}—{% endif %}
+              </td>
+              <td style="font-size:.84rem; white-space:nowrap;">
+                {% if t.display_status == 'queued' %}
+                  <span class="pill" style="background:var(--accent-bg); color:var(--accent-ink);">в очереди на анализ</span>
+                {% elif t.display_status == 'suitable' %}
+                  <span class="pill pill-green">{{ 'заявка подана' if t.status == 'submitted' else 'подходит' }}</span>
+                {% elif t.display_status == 'archived' %}
+                  <span class="pill pill-grey">{{ reject_labels.get(t.reject_reason, t.reject_reason or 'закрыт на сайте') }}</span>
+                {% else %}
+                  <span class="pill pill-red">{{ reject_labels.get(t.reject_reason, t.reject_reason or 'отклонён') }}</span>
+                {% endif %}
+              </td>
+              <td style="font-size:.82rem; color:var(--muted); white-space:nowrap;">
+                {{ t.last_status_check | fmt_relative }}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const allRows = Array.from(document.querySelectorAll('#tenders-table tbody tr'));
+const tbody = document.querySelector('#tenders-table tbody');
+
+function currentFilters() {
+  return {
+    onlySuitable: document.getElementById('only-suitable').checked,
+    showArchived: document.getElementById('show-archived').checked,
+    regions: Array.from(document.querySelectorAll('.region-filter:checked')).map(el => el.value),
+    type: document.getElementById('type-filter').value,
+    budgetMin: parseFloat(document.getElementById('budget-min').value) || null,
+    budgetMax: parseFloat(document.getElementById('budget-max').value) || null,
+    minMargin: parseFloat(document.getElementById('margin-min').value),
+    rejects: Array.from(document.querySelectorAll('.reject-filter:checked')).map(el => el.value),
+    dateField: document.getElementById('date-field').value,
+    dateFrom: document.getElementById('date-from').value || null,
+    dateTo: document.getElementById('date-to').value || null,
+  };
+}
+
+function rowPasses(row, f) {
+  const status = row.dataset.status;
+  if (f.onlySuitable && status !== 'suitable') return false;
+  if (!f.showArchived && status === 'archived') return false;
+
+  if (f.regions.length && !f.regions.includes(row.dataset.region)) return false;
+  if (f.type && row.dataset.type !== f.type) return false;
+
+  const budget = row.dataset.budget !== '' ? parseFloat(row.dataset.budget) : null;
+  if (f.budgetMin !== null && (budget === null || budget < f.budgetMin)) return false;
+  if (f.budgetMax !== null && (budget === null || budget > f.budgetMax)) return false;
+
+  // Margin filter never excludes rows without a score — it doesn't apply to them.
+  if (!isNaN(f.minMargin)) {
+    const hasScore = row.dataset.hasScore === '1';
+    if (hasScore) {
+      const margin = row.dataset.margin !== '' ? parseFloat(row.dataset.margin) * 100 : null;
+      if (margin === null || margin < f.minMargin) return false;
+    }
+  }
+
+  if (f.rejects.length) {
+    if (!row.dataset.reject || !f.rejects.includes(row.dataset.reject)) return false;
+  }
+
+  if (f.dateFrom || f.dateTo) {
+    const raw = f.dateField === 'deadline' ? row.dataset.deadline : row.dataset.created;
+    if (!raw) return false;
+    const day = raw.slice(0, 10);
+    if (f.dateFrom && day < f.dateFrom) return false;
+    if (f.dateTo && day > f.dateTo) return false;
+  }
+
+  return true;
+}
+
+function compareRows(a, b, sortKey) {
+  if (sortKey === 's_desc') {
+    const aHas = a.dataset.hasScore === '1', bHas = b.dataset.hasScore === '1';
+    if (aHas !== bHas) return aHas ? -1 : 1; // scored rows always lead, never mixed with '—' as 0
+    if (!aHas) return 0;
+    return parseFloat(b.dataset.s) - parseFloat(a.dataset.s);
+  }
+  if (sortKey === 'deadline_asc') {
+    const aD = a.dataset.deadline, bD = b.dataset.deadline;
+    if (!aD && !bD) return 0;
+    if (!aD) return 1;
+    if (!bD) return -1;
+    return aD < bD ? -1 : aD > bD ? 1 : 0;
+  }
+  if (sortKey === 'budget_desc') {
+    const aB = a.dataset.budget !== '' ? parseFloat(a.dataset.budget) : null;
+    const bB = b.dataset.budget !== '' ? parseFloat(b.dataset.budget) : null;
+    if (aB === null && bB === null) return 0;
+    if (aB === null) return 1;
+    if (bB === null) return -1;
+    return bB - aB;
+  }
+  // created_desc
+  return (b.dataset.created || '').localeCompare(a.dataset.created || '');
+}
+
+function applyFiltersAndSort() {
+  const f = currentFilters();
+  const sortKey = document.getElementById('sort-select').value;
+
+  const visible = allRows.filter(row => rowPasses(row, f));
+  visible.sort((a, b) => compareRows(a, b, sortKey));
+
+  allRows.forEach(r => { r.style.display = 'none'; });
+  visible.forEach(r => {
+    r.style.display = '';
+    tbody.appendChild(r);
+  });
+
+  document.getElementById('visible-count').textContent = visible.length;
+}
+
+applyFiltersAndSort();
+</script>
+{% endblock %}

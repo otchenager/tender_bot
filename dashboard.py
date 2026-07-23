@@ -24,7 +24,7 @@ def _rate_guard():
 
 # Bumped when a deploy must be externally detectable (Railway gives no
 # other cheap signal that the new build is serving).
-APP_REV = "2026-07-23.freshness-revalidation.2"
+APP_REV = "2026-07-24.all-tenders-view.1"
 
 
 @app.route("/healthz")
@@ -76,6 +76,47 @@ def fmt_date(value):
         return str(value)[:16]
 
 
+@app.template_filter("fmt_days_remaining")
+def fmt_days_remaining(value):
+    """ISO deadline → 'N дн.' / 'сегодня' / 'истёк'. Falls back to the raw
+    text for the rare non-ISO deadline the scraper couldn't parse."""
+    if not value:
+        return "—"
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(str(value))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        days = (dt - datetime.now(timezone.utc)).days
+        if days < 0:
+            return "истёк"
+        if days == 0:
+            return "сегодня"
+        return f"{days} дн."
+    except (TypeError, ValueError):
+        return str(value)[:10]
+
+
+@app.template_filter("fmt_relative")
+def fmt_relative(value):
+    """TIMESTAMPTZ/ISO → 'N ч. назад' / 'N дн. назад' (coarse, Russian)."""
+    if not value:
+        return "—"
+    try:
+        from datetime import datetime, timezone
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+        if hours < 1:
+            return "менее часа назад"
+        if hours < 24:
+            return f"{int(hours)} ч. назад"
+        return f"{int(hours // 24)} дн. назад"
+    except (TypeError, ValueError):
+        return str(value)[:16]
+
+
 # ---------------------------------------------------------------------------
 # Tab 1 — Suitable tenders
 # ---------------------------------------------------------------------------
@@ -114,6 +155,22 @@ def revalidate_status():
         "checked_count": state.get("last_checked_count"),
         "archived_count": state.get("last_archived_count"),
     })
+
+
+# ---------------------------------------------------------------------------
+# All tenders — full-funnel view combining tenders_raw + tenders, so the
+# contractor can see everything the parser has ever touched (queued,
+# filtered out, rejected, suitable, archived), not just the actionable
+# subset shown on the main tab. Filtering/sorting happens client-side in
+# JS (see all_tenders.html) — the row count is small enough (low
+# thousands) that a single render + JS filter is simpler and snappier
+# than paginated server-side queries.
+# ---------------------------------------------------------------------------
+
+@app.route("/all-tenders")
+def all_tenders():
+    rows = db.get_all_tenders_combined()
+    return render_template("all_tenders.html", rows=rows, all_regions=ALL_REGIONS)
 
 
 @app.route("/tender/<int:tender_id>")

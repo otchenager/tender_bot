@@ -153,6 +153,8 @@
     tr.row-green td { background: #f2faf5; }
     tr.row-yellow td{ background: #fdf9ec; }
     tr.row-grey td  { color: var(--muted); }
+    tr.row-red td   { background: var(--bad-bg); }
+    tr.row-queued td{ background: var(--accent-bg); }
 
     .badge-unknown { font-size: .68rem; background: var(--accent-bg); color: var(--accent-ink);
                      padding: 1px 6px; border-radius: 5px; margin-left: 4px; font-weight: 700; }
@@ -232,6 +234,7 @@
     <span class="brand-mark">🏗</span> Тендер-бот
   </a>
   <a href="/"         class="nav-item-link {{ 'active' if active_tab=='tenders'  else '' }}">Подходящие</a>
+  <a href="/all-tenders" class="nav-item-link {{ 'active' if active_tab=='all_tenders' else '' }}">Все тендеры</a>
   <a href="/prices"   class="nav-item-link {{ 'active' if active_tab=='prices'   else '' }}">Мой прайс</a>
   <a href="/settings" class="nav-item-link {{ 'active' if active_tab=='settings' else '' }}">Параметры</a>
   <a href="/chat"     class="nav-item-link {{ 'active' if active_tab=='chat'     else '' }}">AI-ассистент</a>

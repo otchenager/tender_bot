@@ -750,6 +750,120 @@ def get_pending_document_fetches(source: str) -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
+def get_all_tenders_combined() -> list[dict]:
+    """Full-funnel view for the 'Все тендеры' dashboard page: every
+    tenders_raw row that never made it to `tenders` (filtered_out by B/R,
+    or passed but not yet fetched/analyzed) UNIONed with every `tenders`
+    row (which carries scores once analyzed). tender_type only lives on
+    tenders_raw, so analyzed rows pull it via a LEFT JOIN on
+    (external_id, source) rather than adding a column to `tenders`.
+
+    Each row gets two derived flags the template/JS need to get sorting
+    and filtering right without ever treating a missing score as zero:
+      - has_score: True only for rows with a real s_score (suitable/
+        submitted/archived-that-was-suitable). Rejected tenders (any
+        reason) never reach the scoring step, so they're always None here.
+      - is_queued: True only for rows genuinely awaiting processing
+        (tenders_raw 'passed'/'raw' with no tenders row yet, or a
+        `tenders` row stuck at 'pending' mid-analysis) — distinct from
+        a rejected tender that also happens to have no score.
+    """
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+
+        cur.execute("""
+            SELECT
+                t.id, t.external_id, t.source, t.title, t.url, t.region,
+                t.budget_byn, t.deadline, t.status, t.reject_reason,
+                t.k_score, t.l_score, t.m_score, t.s_score,
+                t.last_status_check, t.created_at,
+                r.tender_type
+            FROM tenders t
+            LEFT JOIN tenders_raw r
+                ON r.external_id = t.external_id AND r.source = t.source
+        """)
+        analyzed = [dict(row) for row in cur.fetchall()]
+
+        cur.execute("""
+            SELECT
+                r.id, r.external_id, r.source, r.title, r.url, r.region,
+                r.budget_byn, r.deadline, r.status, r.reject_reason,
+                r.tender_type, r.created_at
+            FROM tenders_raw r
+            WHERE NOT EXISTS (
+                SELECT 1 FROM tenders t
+                WHERE t.external_id = r.external_id AND t.source = r.source
+            )
+        """)
+        raw_only = [dict(row) for row in cur.fetchall()]
+
+    def _display_status(status: str, is_queued: bool) -> str:
+        # Single value the template branches on for badge color/text —
+        # 'queued' always wins regardless of the underlying status string
+        # ('pending' in tenders, 'passed'/'raw' in tenders_raw).
+        if is_queued:
+            return "queued"
+        if status in ("suitable", "submitted"):
+            return "suitable"
+        if status == "archived":
+            return "archived"
+        if status in ("rejected", "filtered_out"):
+            return "rejected"
+        return status
+
+    rows = []
+    for t in analyzed:
+        is_queued = t["status"] == "pending"
+        rows.append({
+            "kind": "tenders",
+            "display_status": _display_status(t["status"], is_queued),
+            "id": t["id"],
+            "external_id": t["external_id"],
+            "source": t["source"],
+            "title": t["title"],
+            "url": t["url"],
+            "tender_type": t["tender_type"],
+            "region": t["region"],
+            "budget_byn": t["budget_byn"],
+            "deadline": t["deadline"],
+            "status": t["status"],
+            "reject_reason": t["reject_reason"],
+            "k_score": t["k_score"],
+            "l_score": t["l_score"],
+            "m_score": t["m_score"],
+            "s_score": t["s_score"],
+            "last_status_check": t["last_status_check"],
+            "created_at": t["created_at"],
+            "is_queued": is_queued,
+            "has_score": t["s_score"] is not None,
+        })
+    for r in raw_only:
+        is_queued = r["status"] in ("passed", "raw")
+        rows.append({
+            "kind": "tenders_raw",
+            "display_status": _display_status(r["status"], is_queued),
+            "id": r["id"],
+            "external_id": r["external_id"],
+            "source": r["source"],
+            "title": r["title"],
+            "url": r["url"],
+            "tender_type": r["tender_type"],
+            "region": r["region"],
+            "budget_byn": r["budget_byn"],
+            "deadline": r["deadline"],
+            "status": r["status"],
+            "reject_reason": r["reject_reason"],
+            "k_score": None, "l_score": None, "m_score": None, "s_score": None,
+            "last_status_check": None,
+            "created_at": r["created_at"],
+            "is_queued": is_queued,
+            "has_score": False,
+        })
+
+    rows.sort(key=lambda x: x["created_at"] or "", reverse=True)
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Tender freshness revalidation — a tender's active/closed status on the
 # source site can change after we've already stored it (and possibly shown
