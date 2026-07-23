@@ -814,9 +814,10 @@ def get_all_tenders_combined() -> list[dict]:
     rows = []
     for t in analyzed:
         is_queued = t["status"] == "pending"
+        display_status = _display_status(t["status"], is_queued)
         rows.append({
             "kind": "tenders",
-            "display_status": _display_status(t["status"], is_queued),
+            "display_status": display_status,
             "id": t["id"],
             "external_id": t["external_id"],
             "source": t["source"],
@@ -827,7 +828,11 @@ def get_all_tenders_combined() -> list[dict]:
             "budget_byn": t["budget_byn"],
             "deadline": t["deadline"],
             "status": t["status"],
-            "reject_reason": t["reject_reason"],
+            # A tender can go rejected -> suitable again via rescoring (or a
+            # revalidation flip back) without reject_reason ever being
+            # cleared — it's meaningless once the tender is actually
+            # suitable, so don't let it leak into the reject-reason filter.
+            "reject_reason": t["reject_reason"] if display_status != "suitable" else None,
             "k_score": t["k_score"],
             "l_score": t["l_score"],
             "m_score": t["m_score"],
