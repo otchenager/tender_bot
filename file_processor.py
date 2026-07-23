@@ -528,6 +528,23 @@ def _analyze_tender_impl(tender_id: int, documents: list[tuple[str, bytes]]):
         db.reject_tender(tender_id, "ai_error")
         return
 
+    # Filter I — keyword match, now a REAL content check instead of a title
+    # guess. VPS-side title filtering (removed) could never see a keyword
+    # that's absent from the tender title but present in the smeta itself
+    # (e.g. "штукатурка" makes up 70% of a smeta whose title never mentions
+    # it) — checking the actual extracted document text fixes that blind
+    # spot. Runs here, before the expensive Step1 Claude call, specifically
+    # to save that cost on tenders that would fail anyway. Scan-only PDFs
+    # (text extraction empty, only page images) can't be keyword-checked
+    # cheaply, so they skip this check and proceed to Step1 as before.
+    if text:
+        keywords = db.get_active_price_item_names()
+        low_text = text.lower()
+        if keywords and not any(kw.lower() in low_text for kw in keywords):
+            db.reject_tender(tender_id, "keyword")
+            log.info(f"Tender {tender_id} rejected: keyword not found in smeta text")
+            return
+
     extraction = _step1_extract(text, images, tender_id)
     if extraction is None:
         log.error(f"Step1 extraction failed for tender {tender_id}")

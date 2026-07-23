@@ -24,7 +24,7 @@ def _rate_guard():
 
 # Bumped when a deploy must be externally detectable (Railway gives no
 # other cheap signal that the new build is serving).
-APP_REV = "2026-07-22.raw-layer.1"
+APP_REV = "2026-07-23.keyword-filter.1"
 
 
 @app.route("/healthz")
@@ -336,7 +336,7 @@ def chat_message():
 СТАТИСТИКА ВОРОНКИ:
 - Всего обработано: {db.count_tenders()}
 - Подходящих найдено: {db.count_suitable()}
-- Отсеяно по ключевым словам (I): {db.count_rejected('failed_I')}
+- Отсеяно по ключевым словам (I): {db.count_rejected('keyword')}
 - Отсеяно по бюджету (B): {db.count_rejected('failed_B')}
 - Отсеяно по региону (R): {db.count_rejected('failed_R')}
 - Отсеяно мало совпадений (K): {db.count_rejected('failed_K')}
