@@ -22,6 +22,11 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+try:
+    import resource  # POSIX only (VPS runs Linux) — memory instrumentation below
+except ImportError:
+    resource = None
+
 import requests
 import urllib3
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -54,6 +59,39 @@ scheduler = BackgroundScheduler()
 _DOWNLOAD_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0",
 }
+
+
+# ---------------------------------------------------------------------------
+# Memory instrumentation — investigating a leak that has been triggering the
+# OOM killer roughly every 30-40 minutes on the VPS's ~956MB. Logged at the
+# start/end of every round and after each source, so per-round and
+# per-source growth is visible in the logs without guessing.
+# ---------------------------------------------------------------------------
+
+def _rss_mb() -> float | None:
+    """Current resident memory in MB. /proc/self/status (Linux, actual
+    CURRENT RSS) is preferred; resource.getrusage falls back to the
+    process's peak RSS (POSIX, monotonic — never decreases) when /proc
+    isn't available."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except Exception:
+        pass
+    if resource is not None:
+        try:
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        except Exception:
+            pass
+    return None
+
+
+def _log_rss(label: str):
+    rss = _rss_mb()
+    if rss is not None:
+        log.info(f"RSS {label}: {rss:.1f} MB")
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +233,25 @@ def _send_tender(tender: dict, documents: list[tuple[str, bytes]]) -> bool:
 # Pending document fetches — Railway tells us, via tenders_raw, which raw
 # tenders passed live B/R and still need documents fetched + the full
 # ingest_tender pipeline. Reuses the existing document downloader and
-# _send_tender() as-is.
+# _send_tender() as-is, strictly one tender at a time (download → send →
+# next; nothing for multiple tenders is ever held in memory simultaneously).
+#
+# Capped per round (PENDING_FETCH_CAP) because the backlog can arrive faster
+# than it drains — a settings loosening or a big first-run raw-ingest batch
+# can make dozens of rows "passed" at once. Processing all of them in one
+# uninterrupted burst (previously: no cap, no pacing) is what turned a slow
+# pre-existing memory creep into an OOM every ~90-100s: BeautifulSoup trees
+# hold circular parent/child references, so they're only reclaimed by
+# Python's cyclic GC, not plain refcounting — a tight burst of large-page
+# parses can out-run that collector. Capping + the same _sleep() pacing the
+# normal scrape loop already uses between card fetches fixes both the spike
+# and (as a side effect) avoids hammering the source site. The backlog just
+# waits in tenders_raw with status='passed' in the meantime — nothing is
+# lost, it drains a bit more each round.
 # ---------------------------------------------------------------------------
+
+PENDING_FETCH_CAP = 15
+
 
 def _fetch_and_send_pending_documents():
     for source_name, scraper_module, _checkpoint_key, _max_pages in SOURCES:
@@ -217,7 +272,13 @@ def _fetch_and_send_pending_documents():
 
         if not pending:
             continue
-        log.info(f"{source_name}: {len(pending)} pending document fetch(es)")
+
+        backlog_total = len(pending)
+        pending = pending[:PENDING_FETCH_CAP]
+        log.info(
+            f"{source_name}: {backlog_total} pending document fetch(es) "
+            f"(processing {len(pending)} this round)"
+        )
 
         # goszakupki's detail-card parser needs a session bootstrapped via
         # the homepage first (session-cookie flow) — same as fetch_tenders().
@@ -235,9 +296,16 @@ def _fetch_and_send_pending_documents():
             if not url:
                 continue
 
+            # Same per-card pacing the normal scrape loop uses — this loop
+            # previously had none, firing every card fetch back-to-back.
+            scraper_module._sleep()
+
             try:
                 if source_name == "goszakupki":
                     card = scraper_goszakupki._parse_card(session, url)
+                    if card == "STOP":
+                        log.warning(f"{source_name}: STOP mid pending-fetch (CAPTCHA/403), abandoning rest of backlog this round")
+                        break
                     doc_urls = card.get("documents", []) if isinstance(card, dict) else []
                 else:
                     numeric_id = ext_id.split("_", 1)[-1]
@@ -250,6 +318,8 @@ def _fetch_and_send_pending_documents():
             documents = _download_documents(doc_urls)
             ok = _send_tender(row, documents)
             log.info(f"  → pending doc {'sent' if ok else 'FAILED to send'}: {ext_id}")
+            # documents/card go out of scope here, before the next iteration
+            # starts downloading the next tender's files.
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +337,7 @@ SOURCES = [
 
 def parse_and_send():
     log.info("=== Parser round started ===")
+    _log_rss("at round start")
     checkpoint = _load_checkpoint()
 
     for source_name, scraper_module, checkpoint_key, max_pages in SOURCES:
@@ -319,7 +390,10 @@ def parse_and_send():
             checkpoint[checkpoint_key] = new_checkpoint
             _save_checkpoint(checkpoint)
 
+        _log_rss(f"after {source_name}")
+
     _fetch_and_send_pending_documents()
+    _log_rss("after pending-document fetch")
 
     log.info("=== Parser round complete ===")
 
