@@ -153,6 +153,28 @@ def init_db():
             )
         """)
 
+        # Singleton row (id=1) tracking the freshness-revalidation job: lets
+        # a dashboard button request an on-demand run and poll for it to
+        # finish, without a full job-queue system — the VPS's manual-trigger
+        # poll job checks manual_requested_at, and any run that finishes
+        # AFTER that timestamp (scheduled or manual) satisfies the request.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS revalidation_state (
+                id                   INT PRIMARY KEY DEFAULT 1,
+                manual_requested_at  TIMESTAMPTZ,
+                last_run_started_at  TIMESTAMPTZ,
+                last_run_finished_at TIMESTAMPTZ,
+                last_run_trigger     TEXT,
+                last_checked_count   INT,
+                last_archived_count  INT,
+                CHECK (id = 1)
+            )
+        """)
+        cur.execute("""
+            INSERT INTO revalidation_state (id) VALUES (1)
+            ON CONFLICT (id) DO NOTHING
+        """)
+
         # Company requisites for document generation. SENSITIVE: contains
         # УНП and bank details — never expose through public API responses,
         # only through the dashboard profile tab and generated documents.
@@ -322,13 +344,17 @@ def archive_tender(tender_id: int, marker: str):
 
 def get_suitable_tenders(limit: int = 200) -> list[dict]:
     # 'submitted' stays visible: the user marked those manually and still
-    # wants to see them among the suitable ones (with a badge).
+    # wants to see them among the suitable ones (with a badge). 'archived'
+    # is included too (greyed out client-side) — these were suitable/
+    # submitted until revalidation found the source site closed them; the
+    # contractor should see that a tender disappeared and why, not have it
+    # silently vanish. Active tenders always sort before archived ones.
     with _conn() as conn:
         cur = _dict_cursor(conn)
         cur.execute("""
             SELECT * FROM tenders
-            WHERE status IN ('suitable', 'submitted')
-            ORDER BY s_score DESC NULLS LAST, created_at DESC
+            WHERE status IN ('suitable', 'submitted', 'archived')
+            ORDER BY (status = 'archived') ASC, s_score DESC NULLS LAST, created_at DESC
             LIMIT %s
         """, (limit,))
         return [dict(r) for r in cur.fetchall()]
@@ -730,24 +756,41 @@ def get_pending_document_fetches(source: str) -> list[dict]:
 # it to the contractor as 'suitable'); this periodically re-checks it.
 # ---------------------------------------------------------------------------
 
-def get_tenders_to_revalidate() -> list[dict]:
-    """Still-actionable tenders (suitable/submitted) whose deadline hasn't
-    passed yet — these are worth periodically re-checking against the live
-    site, unlike already-rejected/archived tenders the contractor won't see.
-    The deadline regex guards the cast: deadline is TEXT and can hold
-    non-ISO text when the scraper's own date parsing failed."""
+REVALIDATE_SAFETY_CAP = 100
+
+
+def get_tenders_to_revalidate(limit: int = REVALIDATE_SAFETY_CAP) -> list[dict]:
+    """ALL still-actionable tenders (suitable/submitted) — unlike an earlier
+    version of this function, deadline no longer filters rows out (a closed
+    lot is worth knowing about even past its own deadline); it only orders
+    them, soonest first, so a capped batch prioritizes the ones that matter
+    most. The cap is a safety net now that a daily scheduled run (plus an
+    on-demand manual trigger) keeps the backlog from growing large between
+    checks — logs a warning if it's ever actually hit, since that would mean
+    usage patterns changed enough to reconsider it."""
     with _conn() as conn:
         cur = _dict_cursor(conn)
-        cur.execute(r"""
+        cur.execute("""
+            SELECT COUNT(*) as cnt FROM tenders
+            WHERE status IN ('suitable', 'submitted')
+              AND url IS NOT NULL AND url != ''
+        """)
+        total = cur.fetchone()["cnt"]
+        if total > limit:
+            log.warning(
+                f"get_tenders_to_revalidate: {total} eligible tenders exceeds "
+                f"the safety cap ({limit}) — serving the {limit} with the "
+                f"soonest deadlines this round, rest deferred to next run"
+            )
+
+        cur.execute("""
             SELECT external_id, source, url
             FROM tenders
             WHERE status IN ('suitable', 'submitted')
               AND url IS NOT NULL AND url != ''
-              AND deadline IS NOT NULL
-              AND deadline ~ '^\d{4}-\d{2}-\d{2}'
-              AND deadline::timestamptz > NOW()
-            ORDER BY updated_at ASC
-        """)
+            ORDER BY deadline ASC NULLS LAST
+            LIMIT %s
+        """, (limit,))
         return [dict(r) for r in cur.fetchall()]
 
 
@@ -775,6 +818,63 @@ def update_tender_freshness(external_id: str, source: str, still_active: bool,
                     updated_at = NOW()
                 WHERE external_id = %s AND source = %s
             """, (checked_at, external_id, source))
+
+
+# ---------------------------------------------------------------------------
+# Revalidation trigger/status — backs the manual "Проверить актуальность"
+# button. No job queue: a run (scheduled OR manual) that finishes after
+# manual_requested_at satisfies whatever manual request was pending, since
+# both trigger types check the exact same tender set.
+# ---------------------------------------------------------------------------
+
+def request_manual_revalidation() -> str:
+    """Records a manual trigger request. Returns the requested_at timestamp
+    (ISO) so the caller (dashboard JS) can later ask 'is the run that
+    satisfies THIS click done yet' rather than being confused by an
+    unrelated previous run's completion."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE revalidation_state SET manual_requested_at = NOW() WHERE id = 1
+            RETURNING manual_requested_at
+        """)
+        return cur.fetchone()[0].isoformat()
+
+
+def get_revalidation_state() -> dict:
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("SELECT * FROM revalidation_state WHERE id = 1")
+        row = cur.fetchone()
+        return dict(row) if row else {}
+
+
+def get_pending_manual_revalidation() -> bool:
+    """True when a manual request hasn't yet been satisfied by any run
+    (scheduled or manual) finishing after it was made."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT manual_requested_at IS NOT NULL
+                   AND (last_run_finished_at IS NULL OR last_run_finished_at < manual_requested_at)
+            FROM revalidation_state WHERE id = 1
+        """)
+        row = cur.fetchone()
+        return bool(row[0]) if row else False
+
+
+def mark_revalidation_result(trigger: str, checked_count: int, archived_count: int,
+                              started_at: str | None = None, finished_at: str | None = None):
+    with _conn() as conn:
+        conn.cursor().execute("""
+            UPDATE revalidation_state
+            SET last_run_trigger = %s,
+                last_run_started_at = COALESCE(%s, last_run_started_at),
+                last_run_finished_at = COALESCE(%s, NOW()),
+                last_checked_count = %s,
+                last_archived_count = %s
+            WHERE id = 1
+        """, (trigger, started_at, finished_at, checked_count, archived_count))
 
 
 # ---------------------------------------------------------------------------

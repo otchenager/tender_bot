@@ -325,19 +325,24 @@ def _fetch_and_send_pending_documents():
 # ---------------------------------------------------------------------------
 # Freshness revalidation — a tender's active/closed status on the source
 # site can change after we've already stored it (and possibly shown it to
-# the contractor as 'suitable'). Only runs every REVALIDATE_EVERY_N_ROUNDS
-# parser cycles: unlike raw-ingest/pending-fetch, staleness here is a
-# slow-moving concern (deadlines are days/weeks out), so hourly-ish
-# checking is plenty and keeps this extra detail-page traffic light on top
-# of the normal scrape + pending-fetch load. Capped and paced the same way
-# as the pending-document fetch, for the same reasons (see above).
+# the contractor as 'suitable'). ONE shared batch function, run_revalidation,
+# is invoked from two independent APScheduler jobs (wired up in main()):
+#   - a daily job (all suitable/submitted tenders, "scheduled" trigger)
+#   - a frequent, cheap poll job that checks whether the dashboard's manual
+#     "Проверить актуальность" button was clicked, and if so runs the exact
+#     same batch with trigger="manual"
+# The daily cadence keeps the batch small between runs, so REVALIDATE_CAP is
+# now a safety net (mirrors db.REVALIDATE_SAFETY_CAP) rather than the
+# primary throttle — capped + paced (~1-2.5s/request, same as the rest of
+# the scraper) either way, so a sudden large backlog still can't spike load
+# or hammer the source site in one go.
 # ---------------------------------------------------------------------------
 
-REVALIDATE_EVERY_N_ROUNDS = 10
-REVALIDATE_CAP = 15
+REVALIDATE_CAP = 100
 
 
-def revalidate_active_tenders():
+def run_revalidation(trigger: str):
+    started_at = datetime.now(timezone.utc).isoformat()
     try:
         resp = requests.get(
             f"{RAILWAY_URL}/api/tenders_to_revalidate",
@@ -352,14 +357,12 @@ def revalidate_active_tenders():
         log.error(f"tenders_to_revalidate fetch error: {e}")
         return
 
-    if not candidates:
-        return
-
-    backlog_total = len(candidates)
     candidates = candidates[:REVALIDATE_CAP]
-    log.info(f"revalidation: {backlog_total} candidate(s) (checking {len(candidates)} this round)")
+    log.info(f"revalidation ({trigger}): checking {len(candidates)} tender(s) this run")
 
     goszakupki_session = None
+    checked_count = 0
+    archived_count = 0
 
     for row in candidates:
         source_name = row.get("source")
@@ -374,7 +377,7 @@ def revalidate_active_tenders():
                     goszakupki_session = requests.Session()
                     home = scraper_goszakupki._get(goszakupki_session, scraper_goszakupki.BASE_URL + "/")
                     if home is None or home == "STOP":
-                        log.error("revalidation: goszakupki session bootstrap failed, abandoning goszakupki rows this round")
+                        log.error("revalidation: goszakupki session bootstrap failed, abandoning goszakupki rows this run")
                         goszakupki_session = False
                 if goszakupki_session is False:
                     continue
@@ -382,7 +385,7 @@ def revalidate_active_tenders():
                 scraper_goszakupki._sleep()
                 card = scraper_goszakupki._parse_card(goszakupki_session, url)
                 if card == "STOP":
-                    log.warning("revalidation: STOP mid-batch (CAPTCHA/403), abandoning rest of backlog this round")
+                    log.warning("revalidation: STOP mid-batch (CAPTCHA/403), abandoning rest of backlog this run")
                     break
                 if not isinstance(card, dict):
                     continue
@@ -408,6 +411,16 @@ def revalidate_active_tenders():
             f"  → revalidated {ext_id}: still_active={still_active} "
             f"({'sent' if ok else 'FAILED to send'})"
         )
+        checked_count += 1
+        if not still_active:
+            archived_count += 1
+
+    finished_at = datetime.now(timezone.utc).isoformat()
+    _report_revalidation_finished(trigger, checked_count, archived_count, started_at, finished_at)
+    log.info(
+        f"revalidation ({trigger}) complete: checked={checked_count}, "
+        f"archived={archived_count}"
+    )
 
 
 def _send_freshness_update(external_id: str, source: str, still_active: bool, checked_at: str) -> bool:
@@ -431,6 +444,52 @@ def _send_freshness_update(external_id: str, source: str, still_active: bool, ch
     return False
 
 
+def _report_revalidation_finished(trigger: str, checked_count: int, archived_count: int,
+                                   started_at: str, finished_at: str) -> bool:
+    payload = {
+        "trigger": trigger,
+        "checked_count": checked_count,
+        "archived_count": archived_count,
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
+    headers = {"X-API-Key": INGEST_API_KEY, "Content-Type": "application/json"}
+    try:
+        resp = requests.post(
+            f"{RAILWAY_URL}/api/revalidation_finished",
+            json=payload, headers=headers, timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            return True
+        log.warning(f"revalidation_finished HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        log.error(f"revalidation_finished error: {e}")
+    return False
+
+
+def _check_manual_revalidation():
+    """Cheap, frequent poll (Railway DB only — no source-site traffic, so
+    politeness pacing doesn't apply here) for the manual trigger button.
+    max_instances=1 on this job (see main()) is what actually prevents a
+    second poll from double-processing while a run is still in progress —
+    once run_revalidation reports its result, the pending check goes false
+    again on its own (see db.get_pending_manual_revalidation)."""
+    try:
+        resp = requests.get(
+            f"{RAILWAY_URL}/api/revalidation_pending",
+            headers={"X-API-Key": INGEST_API_KEY},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            log.warning(f"revalidation_pending HTTP {resp.status_code}")
+            return
+        if resp.json().get("pending"):
+            log.info("Manual revalidation requested — running now")
+            run_revalidation("manual")
+    except Exception as e:
+        log.error(f"revalidation_pending check error: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Main parse-and-send round
 # ---------------------------------------------------------------------------
@@ -444,11 +503,7 @@ SOURCES = [
 ]
 
 
-_round_counter = 0
-
-
 def parse_and_send():
-    global _round_counter
     log.info("=== Parser round started ===")
     _log_rss("at round start")
     checkpoint = _load_checkpoint()
@@ -508,11 +563,6 @@ def parse_and_send():
     _fetch_and_send_pending_documents()
     _log_rss("after pending-document fetch")
 
-    _round_counter += 1
-    if _round_counter % REVALIDATE_EVERY_N_ROUNDS == 0:
-        revalidate_active_tenders()
-        _log_rss("after revalidation")
-
     log.info("=== Parser round complete ===")
 
 
@@ -537,6 +587,20 @@ def _parser_job():
         scheduler.reschedule_job("parser", trigger="interval", seconds=next_secs)
 
 
+def _daily_revalidation_job():
+    try:
+        run_revalidation("scheduled")
+    except Exception as e:
+        log.error(f"Daily revalidation job error: {e}")
+
+
+def _manual_revalidation_poll_job():
+    try:
+        _check_manual_revalidation()
+    except Exception as e:
+        log.error(f"Manual revalidation poll error: {e}")
+
+
 def main():
     if not RAILWAY_URL:
         print("[main_vps] RAILWAY_URL not set in .env")
@@ -550,6 +614,22 @@ def main():
         trigger="interval",
         seconds=10,
         id="parser",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _daily_revalidation_job,
+        trigger="interval",
+        hours=24,
+        id="daily_revalidation",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _manual_revalidation_poll_job,
+        trigger="interval",
+        seconds=20,
+        id="manual_revalidation_poll",
         max_instances=1,
         coalesce=True,
     )

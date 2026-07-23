@@ -39,10 +39,10 @@
   </div>
 {% endmacro %}
 
-<div class="d-flex align-items-baseline justify-content-between flex-wrap gap-2 mb-3">
+<div class="d-flex align-items-baseline justify-content-between flex-wrap gap-2 mb-2">
   <div>
     <h4 class="mb-1">Подходящие тендеры
-      <span style="font-weight:500; color:var(--muted); font-size:1rem;">({{ tenders|length }})</span>
+      <span style="font-weight:500; color:var(--muted); font-size:1rem;">({{ active_count }})</span>
     </h4>
     {% if params_updated_at %}
     <div style="font-size:.83rem; color:var(--muted);">
@@ -50,15 +50,31 @@
     </div>
     {% endif %}
   </div>
-  <a href="/settings" style="font-size:.87rem; color:var(--ink-2); text-decoration:none; font-weight:500;">
-    Настроить параметры →
-  </a>
+  <div class="d-flex align-items-center gap-3">
+    <button id="revalidate-btn" class="btn btn-accent btn-sm" style="font-size:.85rem;"
+            onclick="triggerRevalidation()">
+      Проверить актуальность
+    </button>
+    <a href="/settings" style="font-size:.87rem; color:var(--ink-2); text-decoration:none; font-weight:500;">
+      Настроить параметры →
+    </a>
+  </div>
 </div>
+
+<div id="revalidate-status" style="display:none; font-size:.85rem; color:var(--ink-2); margin-bottom:1rem;"></div>
+
+{% set archived_count = tenders | selectattr('status', 'equalto', 'archived') | list | length %}
+{% if archived_count > 0 %}
+<label class="d-flex align-items-center gap-2 mb-3" style="font-size:.85rem; color:var(--ink-2); cursor:pointer; width:fit-content;">
+  <input type="checkbox" id="toggle-archived" checked onchange="toggleArchived()">
+  Показать закрытые на сайте ({{ archived_count }})
+</label>
+{% endif %}
 
 {% if tenders %}
 <div class="d-flex flex-column gap-3 mb-4">
   {% for t in tenders %}
-  <a class="tender-card" href="/tender/{{ t.id }}" style="--tier: {{ tier_color(t.s_score) }};">
+  <a class="tender-card {{ 'archived' if t.status == 'archived' else '' }}" href="/tender/{{ t.id }}" style="--tier: {{ tier_color(t.s_score) }};">
     <div class="d-flex gap-3 align-items-center">
 
       <div class="flex-grow-1" style="min-width:0;">
@@ -66,6 +82,9 @@
           {{ t.title or 'Без названия' }}
           {% if t.status == 'submitted' %}
             <span class="pill pill-green" style="font-size:.72rem; vertical-align:2px;">заявка подана</span>
+          {% endif %}
+          {% if t.status == 'archived' %}
+            <span class="pill pill-grey" style="font-size:.72rem; vertical-align:2px;">закрыто на сайте</span>
           {% endif %}
         </div>
         <div class="tender-meta">
@@ -124,7 +143,7 @@
 
 <!-- Rejected funnel (collapsed) -->
 {% set funnel = [
-  ('failed_I', 'Не прошли по ключевым словам'),
+  ('keyword', 'Не прошли по ключевым словам (смета)'),
   ('failed_B', 'Бюджет слишком мал'),
   ('failed_R', 'Не наш регион'),
   ('failed_K', 'Мало совпадений (K < 30%)'),
@@ -150,4 +169,55 @@
   </div>
 </details>
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleArchived() {
+  const show = document.getElementById('toggle-archived').checked;
+  document.querySelectorAll('.tender-card.archived').forEach(el => {
+    el.style.display = show ? '' : 'none';
+  });
+}
+
+let _revalidatePoll = null;
+
+async function triggerRevalidation() {
+  const btn = document.getElementById('revalidate-btn');
+  const status = document.getElementById('revalidate-status');
+  btn.disabled = true;
+  status.style.display = 'block';
+  status.textContent = 'Проверяем актуальность тендеров, это может занять до 3 минут…';
+
+  try {
+    const resp = await fetch('/revalidate/trigger', { method: 'POST' });
+    if (!resp.ok) throw new Error('trigger failed');
+    const data = await resp.json();
+    pollRevalidationStatus(data.requested_at, btn, status);
+  } catch (e) {
+    status.textContent = 'Не удалось запустить проверку — попробуйте ещё раз';
+    btn.disabled = false;
+  }
+}
+
+function pollRevalidationStatus(since, btn, status) {
+  if (_revalidatePoll) clearInterval(_revalidatePoll);
+  _revalidatePoll = setInterval(async () => {
+    try {
+      const resp = await fetch('/revalidate/status?since=' + encodeURIComponent(since));
+      const data = await resp.json();
+      if (data.done) {
+        clearInterval(_revalidatePoll);
+        _revalidatePoll = null;
+        const checked = data.checked_count ?? 0;
+        const archived = data.archived_count ?? 0;
+        status.textContent = `Готово — проверено ${checked}, закрыто на сайте: ${archived}. Обновите страницу.`;
+        btn.disabled = false;
+      }
+    } catch (e) {
+      // transient error — keep polling, next tick may succeed
+    }
+  }, 5000);
+}
+</script>
 {% endblock %}

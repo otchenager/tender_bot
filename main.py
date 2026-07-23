@@ -153,8 +153,9 @@ def pending_documents():
 
 # ---------------------------------------------------------------------------
 # Tender freshness revalidation — a tender's active/closed status on the
-# source site can change after ingest; VPS polls this each cycle (or every
-# Nth cycle) and reports back what it found for each candidate.
+# source site can change after ingest. The VPS runs a shared revalidation
+# batch on two triggers: a daily scheduled job, and an on-demand manual
+# check (dashboard button) that a fast poll job picks up separately.
 # ---------------------------------------------------------------------------
 
 @app.route("/api/tenders_to_revalidate", methods=["GET"])
@@ -187,6 +188,38 @@ def update_tender_freshness():
         data["source"],
         bool(data["still_active"]),
         data.get("checked_at"),
+    )
+    return jsonify({"status": "ok"}), 200
+
+
+@app.route("/api/revalidation_pending", methods=["GET"])
+@rate_limit(120, 60)  # VPS polls this frequently (~20s) — cheap, DB-only, no source-site traffic
+def revalidation_pending():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    return jsonify({"pending": db.get_pending_manual_revalidation()}), 200
+
+
+@app.route("/api/revalidation_finished", methods=["POST"])
+@rate_limit(30, 60)
+def revalidation_finished():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    for field in ("trigger", "checked_count", "archived_count"):
+        if field not in data:
+            return jsonify({"error": f"missing field: {field}"}), 400
+
+    db.mark_revalidation_result(
+        data["trigger"],
+        data["checked_count"],
+        data["archived_count"],
+        data.get("started_at"),
+        data.get("finished_at"),
     )
     return jsonify({"status": "ok"}), 200
 

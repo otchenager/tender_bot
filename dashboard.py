@@ -24,7 +24,7 @@ def _rate_guard():
 
 # Bumped when a deploy must be externally detectable (Railway gives no
 # other cheap signal that the new build is serving).
-APP_REV = "2026-07-23.freshness-revalidation.1"
+APP_REV = "2026-07-23.freshness-revalidation.2"
 
 
 @app.route("/healthz")
@@ -83,14 +83,37 @@ def fmt_date(value):
 @app.route("/")
 def index():
     tenders = db.get_suitable_tenders()
+    active_count = sum(1 for t in tenders if t["status"] != "archived")
     rejected = db.get_rejected_counts(hours=24)
     params_updated_at = db.get_search_settings().get("params_updated_at")
     return render_template(
         "index.html",
         tenders=tenders,
+        active_count=active_count,
         rejected=rejected,
         params_updated_at=params_updated_at,
     )
+
+
+@app.route("/revalidate/trigger", methods=["POST"])
+@rate_limit(10, 60)
+def revalidate_trigger():
+    requested_at = db.request_manual_revalidation()
+    return jsonify({"requested_at": requested_at})
+
+
+@app.route("/revalidate/status")
+@rate_limit(120, 60)  # polled every few seconds while a check is running
+def revalidate_status():
+    since = request.args.get("since", "")
+    state = db.get_revalidation_state()
+    finished_at = state.get("last_run_finished_at")
+    done = bool(since and finished_at and finished_at.isoformat() > since)
+    return jsonify({
+        "done": done,
+        "checked_count": state.get("last_checked_count"),
+        "archived_count": state.get("last_archived_count"),
+    })
 
 
 @app.route("/tender/<int:tender_id>")
