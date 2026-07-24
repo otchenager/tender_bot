@@ -61,7 +61,10 @@
   </div>
 </div>
 
-<div id="revalidate-status" style="display:none; font-size:.85rem; color:var(--ink-2); margin-bottom:1rem;"></div>
+<div id="revalidate-status" style="display:none; align-items:center; gap:.7rem; font-size:.85rem; color:var(--ink-2); margin-bottom:1rem;">
+  <span id="revalidate-status-text"></span>
+  <span id="revalidate-progress" class="tape-progress" style="display:none;"></span>
+</div>
 
 {% set archived_count = tenders | selectattr('status', 'equalto', 'archived') | list | length %}
 {% if archived_count > 0 %}
@@ -134,7 +137,19 @@
 {% else %}
 <div class="card mb-4">
   <div class="empty-state">
-    <div class="es-icon">🏗</div>
+    <div class="es-icon">
+      <svg width="46" height="46" viewBox="0 0 48 48" fill="none" stroke="currentColor"
+           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="14" y1="42" x2="14" y2="8"/>
+        <line x1="8" y1="42" x2="20" y2="42"/>
+        <line x1="14" y1="8" x2="42" y2="8"/>
+        <line x1="14" y1="8" x2="4" y2="10"/>
+        <line x1="14" y1="16" x2="30" y2="8"/>
+        <line x1="34" y1="8" x2="34" y2="24"/>
+        <circle cx="34" cy="26" r="2"/>
+        <rect x="2" y="9" width="4" height="4"/>
+      </svg>
+    </div>
     <div style="font-weight:600; color:var(--ink-2); margin-bottom:.25rem;">Подходящих тендеров пока нет</div>
     <div style="font-size:.88rem;">Парсер работает в фоне — новые тендеры появятся здесь автоматически</div>
   </div>
@@ -185,22 +200,26 @@ let _revalidatePoll = null;
 async function triggerRevalidation() {
   const btn = document.getElementById('revalidate-btn');
   const status = document.getElementById('revalidate-status');
+  const text = document.getElementById('revalidate-status-text');
+  const progress = document.getElementById('revalidate-progress');
   btn.disabled = true;
-  status.style.display = 'block';
-  status.textContent = 'Проверяем актуальность тендеров, это может занять до 3 минут…';
+  status.style.display = 'flex';
+  progress.style.display = 'inline-block';
+  text.textContent = 'Проверяем актуальность тендеров, это может занять до 3 минут…';
 
   try {
     const resp = await fetch('/revalidate/trigger', { method: 'POST' });
     if (!resp.ok) throw new Error('trigger failed');
     const data = await resp.json();
-    pollRevalidationStatus(data.requested_at, btn, status);
+    pollRevalidationStatus(data.requested_at, btn, text, progress);
   } catch (e) {
-    status.textContent = 'Не удалось запустить проверку — попробуйте ещё раз';
+    progress.style.display = 'none';
+    text.textContent = 'Не удалось запустить проверку — попробуйте ещё раз';
     btn.disabled = false;
   }
 }
 
-function pollRevalidationStatus(since, btn, status) {
+function pollRevalidationStatus(since, btn, text, progress) {
   if (_revalidatePoll) clearInterval(_revalidatePoll);
   _revalidatePoll = setInterval(async () => {
     try {
@@ -209,9 +228,10 @@ function pollRevalidationStatus(since, btn, status) {
       if (data.done) {
         clearInterval(_revalidatePoll);
         _revalidatePoll = null;
+        progress.style.display = 'none';
         const checked = data.checked_count ?? 0;
         const archived = data.archived_count ?? 0;
-        status.textContent = `Готово — проверено ${checked}, закрыто на сайте: ${archived}. Обновите страницу.`;
+        text.textContent = `Готово — проверено ${checked}, закрыто на сайте: ${archived}. Обновите страницу.`;
         btn.disabled = false;
       }
     } catch (e) {

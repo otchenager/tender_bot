@@ -163,7 +163,7 @@
               </td>
               <td style="font-size:.84rem; white-space:nowrap;">
                 {% if t.display_status == 'queued' %}
-                  <span class="pill" style="background:var(--accent-bg); color:var(--accent-ink);">в очереди на анализ</span>
+                  <span class="pill pill-queued">в очереди на анализ</span>
                 {% elif t.display_status == 'suitable' %}
                   <span class="pill pill-green">{{ 'заявка подана' if t.status == 'submitted' else 'подходит' }}</span>
                 {% elif t.display_status == 'archived' %}

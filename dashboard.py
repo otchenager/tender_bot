@@ -24,7 +24,7 @@ def _rate_guard():
 
 # Bumped when a deploy must be externally detectable (Railway gives no
 # other cheap signal that the new build is serving).
-APP_REV = "2026-07-24.all-tenders-view.2"
+APP_REV = "2026-07-24.design-polish.1"
 
 
 @app.route("/healthz")

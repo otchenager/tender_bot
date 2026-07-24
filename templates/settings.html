@@ -5,9 +5,13 @@
 {% block content %}
 
 {% if rescore_stats %}
-<div class="card p-3 mb-4" style="border-left:4px solid var(--good); display:flex; gap:.75rem;
+<div class="card confirm-banner p-3 mb-4" style="border-left:4px solid var(--good); display:flex; gap:.75rem;
             flex-direction:row; align-items:center; font-size:.92rem;">
-  <span style="font-size:1.2rem;">✅</span>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--good)"
+       stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;">
+    <circle cx="12" cy="12" r="9.5" stroke-opacity=".3"/>
+    <path d="M7.5 12.5l3 3 6-6.5"/>
+  </svg>
   <div>
     <strong>Параметры сохранены.</strong> Существующие тендеры пересчитаны под новые условия:
     подходящих — <strong>{{ rescore_stats.suitable }}</strong>,

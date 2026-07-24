@@ -34,7 +34,14 @@
 
     html { font-size: 15px; }
     body {
-      background: var(--bg);
+      background-color: var(--bg);
+      /* Faint blueprint-grid texture — the one restrained "signature" touch,
+         low-opacity enough to disappear under any solid surface (.card,
+         tables) sitting on top of it; only shows in the page's own margins. */
+      background-image:
+        linear-gradient(rgba(23,27,38,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23,27,38,.025) 1px, transparent 1px);
+      background-size: 28px 28px;
       color: var(--ink);
       font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif;
       -webkit-font-smoothing: antialiased;
@@ -91,12 +98,16 @@
     }
 
     /* ================= Pills & badges ================= */
+    /* Subtle depth (soft outer shadow + faint top highlight) instead of a
+       flat fill — small detail, applies uniformly to every pill variant. */
     .pill { display: inline-block; padding: 3px 11px; border-radius: 999px;
-            font-weight: 600; white-space: nowrap; font-size: .84rem; }
+            font-weight: 600; white-space: nowrap; font-size: .84rem;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 1px 2px rgba(16,24,40,.07); }
     .pill-green  { background: var(--good-bg);   color: var(--good); }
     .pill-yellow { background: var(--warn-bg);   color: var(--warn); }
     .pill-grey   { background: var(--neutral-bg); color: var(--muted); font-weight: 500; }
     .pill-red    { background: var(--bad-bg);    color: var(--bad); }
+    .pill-queued { background: var(--accent-bg); color: var(--accent-ink); }
 
     .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
     .dot-green  { background: #22c55e; }
@@ -148,7 +159,7 @@
     /* ================= Tables ================= */
     table { font-size: 14px; }
     th { font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-    tbody tr { transition: background .12s ease; }
+    tbody tr { transition: background .12s ease, opacity .25s ease; }
     tbody tr:hover { background: #fafbfc; }
     tr.row-green td { background: #f2faf5; }
     tr.row-yellow td{ background: #fdf9ec; }
@@ -221,6 +232,35 @@
     /* ================= Archived (freshness-revalidation) ================= */
     .tender-card.archived { opacity: .5; }
     .tender-card.archived:hover { opacity: .7; }
+
+    /* ================= Loading indicator ("measuring tape") =================
+       Small, on-theme "system is working" signal — a striped track (tick
+       marks, like a tape measure) with a soft amber highlight sweeping
+       across. Not a spinner, not a splash screen; meant to sit inline next
+       to a short status line and disappear the moment the real result is in. */
+    .tape-progress {
+      position: relative; display: inline-block; vertical-align: middle;
+      width: 160px; height: 8px; border-radius: 4px; overflow: hidden;
+      background: repeating-linear-gradient(
+        90deg, var(--neutral-bg) 0px, var(--neutral-bg) 7px,
+        var(--border) 7px, var(--border) 8px
+      );
+    }
+    .tape-progress::after {
+      content: ""; position: absolute; top: 0; left: -40%; width: 40%; height: 100%;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      animation: tapeSweep 1.15s ease-in-out infinite;
+    }
+    @keyframes tapeSweep { from { left: -40%; } to { left: 100%; } }
+
+    /* ================= Save confirmation banner ================= */
+    .confirm-banner {
+      animation: confirmIn .35s cubic-bezier(.2,.8,.2,1) both;
+    }
+    @keyframes confirmIn {
+      from { opacity: 0; transform: translateY(-4px) scale(.98); }
+      to   { opacity: 1; transform: none; }
+    }
 
     /* ================= Misc ================= */
     .empty-state { padding: 3.5rem 1rem; text-align: center; color: var(--muted); }

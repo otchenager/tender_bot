@@ -7,8 +7,14 @@
 <div style="max-width:720px; margin:0 auto;">
 
   {% if saved %}
-  <div class="card p-3 mb-4" style="border-left:4px solid var(--good); font-size:.92rem;">
-    ✅ <strong>Профиль сохранён.</strong> Данные будут использованы при формировании пакетов документов.
+  <div class="card confirm-banner p-3 mb-4" style="border-left:4px solid var(--good); font-size:.92rem;
+              display:flex; align-items:center; gap:.65rem;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--good)"
+         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;">
+      <circle cx="12" cy="12" r="9.5" stroke-opacity=".3"/>
+      <path d="M7.5 12.5l3 3 6-6.5"/>
+    </svg>
+    <span><strong>Профиль сохранён.</strong> Данные будут использованы при формировании пакетов документов.</span>
   </div>
   {% endif %}
 
