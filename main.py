@@ -191,6 +191,24 @@ def monitor_stats():
     return jsonify(db.get_monitor_stats()), 200
 
 
+@app.route("/api/tender_status", methods=["GET"])
+@rate_limit(30, 60)
+def tender_status():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    external_id = request.args.get("external_id", "")
+    source = request.args.get("source", "")
+    if not external_id or not source:
+        return jsonify({"error": "missing param: external_id/source"}), 400
+
+    result = db.get_tender_status_by_external_id(external_id, source)
+    if result is None:
+        return jsonify({"status": "not_yet_reprocessed"}), 200
+    return jsonify(result), 200
+
+
 @app.route("/api/retry_specific_tenders", methods=["POST"])
 @rate_limit(10, 60)
 def retry_specific_tenders():

@@ -914,6 +914,28 @@ def retry_specific_tenders(items: list[dict]) -> dict:
     return {"requeued": requeued, "not_found": not_found}
 
 
+def get_tender_status_by_external_id(external_id: str, source: str) -> dict | None:
+    """Lookup by external_id/source for tracking a specific requeued tender
+    across a re-ingest, since delete_failed_tender + re-ingest gives it a
+    new internal tender_id — token_stats alone can't follow it by name."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("""
+            SELECT id, status, reject_reason, k_score, l_score, m_score, s_score, updated_at
+            FROM tenders WHERE external_id = %s AND source = %s
+        """, (external_id, source))
+        row = cur.fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        cur.execute("""
+            SELECT step, input_tokens, output_tokens, created_at
+            FROM token_usage WHERE tender_id = %s ORDER BY created_at
+        """, (result["id"],))
+        result["token_calls"] = [dict(r) for r in cur.fetchall()]
+        return result
+
+
 def get_monitor_stats() -> dict:
     """Read-only snapshot for periodic pipeline-health checks (Goal 1
     stability monitoring): queue depth, fetch-failure breakdown, and the
