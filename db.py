@@ -835,6 +835,26 @@ def get_recent_ai_errors(limit: int = 10) -> list[dict]:
         return errors
 
 
+def get_retryable_ai_errors() -> list[dict]:
+    """ai_error tenders with zero token_usage rows — confirmed API-level
+    failures (the Step1/2/4 call itself never completed), not a
+    parsing/schema bug. Safe to re-queue: deleting the row lets the VPS's
+    normal /api/pending_documents poll pick it back up (tenders_raw is
+    still status='passed') and re-run the full ingest pipeline, since a
+    tender only disappears from that poll once a `tenders` row exists."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("""
+            SELECT t.id, t.external_id, t.source
+            FROM tenders t
+            WHERE t.status = 'rejected' AND t.reject_reason = 'ai_error'
+              AND NOT EXISTS (
+                  SELECT 1 FROM token_usage u WHERE u.tender_id = t.id
+              )
+        """)
+        return [dict(row) for row in cur.fetchall()]
+
+
 def get_monitor_stats() -> dict:
     """Read-only snapshot for periodic pipeline-health checks (Goal 1
     stability monitoring): queue depth, fetch-failure breakdown, and the

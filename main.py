@@ -191,6 +191,21 @@ def monitor_stats():
     return jsonify(db.get_monitor_stats()), 200
 
 
+@app.route("/api/retry_ai_errors", methods=["POST"])
+@rate_limit(10, 60)
+def retry_ai_errors():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    candidates = db.get_retryable_ai_errors()
+    requeued = [
+        c["external_id"] for c in candidates
+        if db.delete_failed_tender(c["external_id"], c["source"])
+    ]
+    return jsonify({"requeued_count": len(requeued), "requeued": requeued}), 200
+
+
 @app.route("/api/ai_error_detail", methods=["GET"])
 @rate_limit(30, 60)
 def ai_error_detail():

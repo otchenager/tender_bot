@@ -317,7 +317,12 @@ def _mark_fetch_failed(external_id: str, source: str, reason: str) -> bool:
 # lost, it drains a bit more each round.
 # ---------------------------------------------------------------------------
 
-PENDING_FETCH_CAP = 15
+# Lowered from 15 to 8 (2026-07-29): RSS grew ~150MB in 44min during a
+# heavy backlog-draining run, concentrated in this fetch loop (large
+# document buffers + occasional abandoned-thread doubling near the 90s
+# deadline). Stopgap while a streaming-read deadline abort is designed
+# properly — see PENDING_ITEM_DEADLINE_SECONDS comment above.
+PENDING_FETCH_CAP = 8
 
 # requests' own timeout= only bounds a single socket call (connect, or the
 # gap between chunks of one read) — it does NOT bound the total wall-clock
