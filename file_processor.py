@@ -162,12 +162,18 @@ def _call_claude(prompt: str, images_b64: list[str] = None, step: str = "?", ten
         messages=[{"role": "user", "content": content}],
     )
     usage = msg.usage
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
     log.info(
         f"{step} tokens for tender {tender_id}: "
         f"input={usage.input_tokens}, output={usage.output_tokens}, "
-        f"cache_read={getattr(usage, 'cache_read_input_tokens', 0)}, "
-        f"cache_write={getattr(usage, 'cache_creation_input_tokens', 0)}"
+        f"cache_read={cache_read}, cache_write={cache_write}"
     )
+    try:
+        db.record_token_usage(tender_id, step, usage.input_tokens, usage.output_tokens,
+                               cache_read, cache_write)
+    except Exception as e:
+        log.warning(f"record_token_usage failed: {e}")
     return "".join(b.text for b in msg.content if b.type == "text")
 
 

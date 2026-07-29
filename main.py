@@ -191,6 +191,17 @@ def monitor_stats():
     return jsonify(db.get_monitor_stats()), 200
 
 
+@app.route("/api/token_stats", methods=["GET"])
+@rate_limit(30, 60)
+def token_stats():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    limit = request.args.get("limit", default=10, type=int)
+    return jsonify(db.get_token_usage_stats(limit=limit)), 200
+
+
 @app.route("/api/tenders_to_revalidate", methods=["GET"])
 @rate_limit(60, 60)
 def tenders_to_revalidate():

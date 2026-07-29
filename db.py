@@ -153,6 +153,22 @@ def init_db():
             )
         """)
 
+        # Raw Anthropic token counts per API call, tagged by step (Step1/2/4) and
+        # tender_id — feeds real per-tender cost reporting (Goal 2) instead of
+        # guessing from log lines scattered across Railway's log viewer.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS token_usage (
+                id                 SERIAL PRIMARY KEY,
+                tender_id          INTEGER,
+                step               TEXT,
+                input_tokens       INT,
+                output_tokens      INT,
+                cache_read_tokens  INT,
+                cache_write_tokens INT,
+                created_at         TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
         # Singleton row (id=1) tracking the freshness-revalidation job: lets
         # a dashboard button request an on-demand run and poll for it to
         # finish, without a full job-queue system — the VPS's manual-trigger
@@ -744,6 +760,52 @@ def recompute_all_raw_BR(settings: dict) -> dict:
     return stats
 
 
+def record_token_usage(tender_id, step: str, input_tokens: int, output_tokens: int,
+                        cache_read_tokens: int = 0, cache_write_tokens: int = 0):
+    with _conn() as conn:
+        conn.cursor().execute("""
+            INSERT INTO token_usage
+                (tender_id, step, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (tender_id, step, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens))
+
+
+def get_token_usage_stats(limit: int = 10) -> dict:
+    """Per-step averages plus the most recent per-tender totals — real cost
+    data for Goal 2, instead of guessing from a single earlier $2 outlier."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+
+        cur.execute("""
+            SELECT step,
+                   COUNT(*) AS n_calls,
+                   AVG(input_tokens) AS avg_input,
+                   AVG(output_tokens) AS avg_output,
+                   AVG(cache_read_tokens) AS avg_cache_read,
+                   AVG(cache_write_tokens) AS avg_cache_write
+            FROM token_usage
+            GROUP BY step
+            ORDER BY step
+        """)
+        by_step = [dict(row) for row in cur.fetchall()]
+
+        cur.execute("""
+            SELECT tender_id,
+                   SUM(input_tokens) AS total_input,
+                   SUM(output_tokens) AS total_output,
+                   SUM(cache_read_tokens) AS total_cache_read,
+                   SUM(cache_write_tokens) AS total_cache_write,
+                   MAX(created_at) AS last_call_at
+            FROM token_usage
+            GROUP BY tender_id
+            ORDER BY MAX(created_at) DESC
+            LIMIT %s
+        """, (limit,))
+        recent_tenders = [dict(row) for row in cur.fetchall()]
+
+        return {"by_step": by_step, "recent_tenders": recent_tenders}
+
+
 def get_monitor_stats() -> dict:
     """Read-only snapshot for periodic pipeline-health checks (Goal 1
     stability monitoring): queue depth, fetch-failure breakdown, and the
@@ -780,11 +842,18 @@ def get_monitor_stats() -> dict:
         """)
         last_hour = [dict(row) for row in cur.fetchall()]
 
+        cur.execute("""
+            SELECT COUNT(*) AS n FROM tenders_raw
+            WHERE created_at > NOW() - INTERVAL '24 hours'
+        """)
+        ingested_last_24h = cur.fetchone()["n"]
+
         return {
             "pending_queue": pending_queue,
             "fetch_failed_total": sum(fetch_failed.values()),
             "fetch_failed_by_reason": fetch_failed,
             "last_hour_outcomes": last_hour,
+            "ingested_raw_last_24h": ingested_last_24h,
         }
 
 
