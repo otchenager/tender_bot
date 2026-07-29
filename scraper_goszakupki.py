@@ -280,7 +280,7 @@ def _parse_card(session: requests.Session, url: str) -> dict | None:
     if resp is None:
         return None
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(resp.text, "lxml")
     data: dict = {"documents": [], "_active_lot": True}
 
     # h1 fallback title
@@ -360,6 +360,11 @@ def _parse_card(session: requests.Session, url: str) -> dict | None:
     if isinstance(data.get("amount"), str):
         data["amount"] = _parse_amount(data["amount"])
 
+    # Break the tree's circular parent/child references immediately rather
+    # than waiting on the cyclic GC — matters here because this process runs
+    # for days parsing thousands of cards (see main_vps.py RSS instrumentation
+    # / the OOM investigation this is part of).
+    soup.decompose()
     return data
 
 
@@ -421,8 +426,9 @@ def fetch_tenders(checkpoint_external_id: str | None = None,
             _sleep()
             continue
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(resp.text, "lxml")
         row_infos = _parse_list_page(soup)
+        soup.decompose()
         if not row_infos:
             log.info(f"goszakupki page {page} empty, stopping")
             break

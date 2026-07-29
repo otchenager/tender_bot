@@ -141,12 +141,13 @@ def _match_label(label: str) -> str | None:
 
 
 def _extract_ids_from_page(html: str) -> list[str]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
     ids = []
     for a in soup.select("a[href*='/view/']"):
         m = re.search(r"/view/(\d+)", a.get("href", ""))
         if m and m.group(1) not in ids:
             ids.append(m.group(1))
+    soup.decompose()
     return ids
 
 
@@ -156,7 +157,7 @@ def _parse_card(numeric_id: str) -> dict | None:
     if resp is None:
         return None
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(resp.text, "lxml")
     data: dict = {"documents": [], "url": url}
 
     for tr in soup.select("table.w100 tr.af"):
@@ -186,6 +187,7 @@ def _parse_card(numeric_id: str) -> dict | None:
                 href if href.startswith("http") else f"{BASE_URL}{href}"
             )
 
+    soup.decompose()
     return data
 
 
