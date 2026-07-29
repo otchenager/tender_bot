@@ -899,6 +899,21 @@ def revert_mistaken_requeue(items: list[dict]) -> dict:
     return {"reverted": reverted, "already_reprocessed": already_reprocessed, "not_found": not_found}
 
 
+def retry_specific_tenders(items: list[dict]) -> dict:
+    """Requeue an explicit, caller-supplied list of (external_id, source)
+    pairs — unlike get_retryable_ai_errors' heuristic query, this only
+    touches exactly what's passed in. Deleting an ai_error row lets the
+    VPS's normal /api/pending_documents poll pick it back up naturally."""
+    requeued, not_found = [], []
+    for item in items:
+        ext_id, source = item["external_id"], item["source"]
+        if delete_failed_tender(ext_id, source):
+            requeued.append(ext_id)
+        else:
+            not_found.append(ext_id)
+    return {"requeued": requeued, "not_found": not_found}
+
+
 def get_monitor_stats() -> dict:
     """Read-only snapshot for periodic pipeline-health checks (Goal 1
     stability monitoring): queue depth, fetch-failure breakdown, and the

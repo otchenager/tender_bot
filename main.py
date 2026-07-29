@@ -191,6 +191,18 @@ def monitor_stats():
     return jsonify(db.get_monitor_stats()), 200
 
 
+@app.route("/api/retry_specific_tenders", methods=["POST"])
+@rate_limit(10, 60)
+def retry_specific_tenders():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    items = data.get("items", [])
+    return jsonify(db.retry_specific_tenders(items)), 200
+
+
 @app.route("/api/retry_ai_errors", methods=["POST"])
 @rate_limit(10, 60)
 def retry_ai_errors():
