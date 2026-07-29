@@ -835,24 +835,65 @@ def get_recent_ai_errors(limit: int = 10) -> list[dict]:
         return errors
 
 
+# Token-usage logging went live at this commit's deploy (2026-07-29
+# 23:16 MSK / 20:16 UTC) — before it, EVERY ai_error tender has zero
+# token_usage rows regardless of cause, since the logging didn't exist
+# yet. Without this cutoff, "zero token_usage rows" stops meaning
+# "confirmed API-level failure" and starts matching the entire
+# historical ai_error backlog instead (cost a 363-tender scope error on
+# first use of this function — see requeue_scope_error remediation).
+_TOKEN_LOGGING_DEPLOYED_AT = "2026-07-29T20:16:00+00:00"
+
+
 def get_retryable_ai_errors() -> list[dict]:
-    """ai_error tenders with zero token_usage rows — confirmed API-level
-    failures (the Step1/2/4 call itself never completed), not a
-    parsing/schema bug. Safe to re-queue: deleting the row lets the VPS's
-    normal /api/pending_documents poll pick it back up (tenders_raw is
-    still status='passed') and re-run the full ingest pipeline, since a
-    tender only disappears from that poll once a `tenders` row exists."""
+    """ai_error tenders, updated after token-usage logging went live, with
+    zero token_usage rows — confirmed API-level failures (the Step1/2/4
+    call itself never completed), not a parsing/schema bug. Safe to
+    re-queue: deleting the row lets the VPS's normal /api/pending_documents
+    poll pick it back up (tenders_raw is still status='passed') and
+    re-run the full ingest pipeline, since a tender only disappears from
+    that poll once a `tenders` row exists."""
     with _conn() as conn:
         cur = _dict_cursor(conn)
         cur.execute("""
             SELECT t.id, t.external_id, t.source
             FROM tenders t
             WHERE t.status = 'rejected' AND t.reject_reason = 'ai_error'
+              AND t.updated_at > %s
               AND NOT EXISTS (
                   SELECT 1 FROM token_usage u WHERE u.tender_id = t.id
               )
-        """)
+        """, (_TOKEN_LOGGING_DEPLOYED_AT,))
         return [dict(row) for row in cur.fetchall()]
+
+
+def revert_mistaken_requeue(items: list[dict]) -> dict:
+    """One-off remediation for the 2026-07-29 requeue scope error: given
+    (external_id, source) pairs that were mistakenly deleted from `tenders`
+    (see get_retryable_ai_errors' missing time filter, now fixed), revert
+    each one NOT already re-fetched (no `tenders` row yet) back to
+    tenders_raw status='fetch_failed'/'requeue_scope_error' so the VPS
+    stops offering it. Anything already re-fetched is left alone and
+    reported separately — it's already back in the normal pipeline."""
+    reverted, already_reprocessed = [], []
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        for item in items:
+            ext_id, source = item["external_id"], item["source"]
+            cur.execute(
+                "SELECT 1 FROM tenders WHERE external_id = %s AND source = %s",
+                (ext_id, source),
+            )
+            if cur.fetchone():
+                already_reprocessed.append(ext_id)
+                continue
+            cur.execute("""
+                UPDATE tenders_raw
+                SET status = 'fetch_failed', reject_reason = 'requeue_scope_error', updated_at = NOW()
+                WHERE external_id = %s AND source = %s
+            """, (ext_id, source))
+            reverted.append(ext_id)
+    return {"reverted": reverted, "already_reprocessed": already_reprocessed}
 
 
 def get_monitor_stats() -> dict:

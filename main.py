@@ -206,6 +206,18 @@ def retry_ai_errors():
     return jsonify({"requeued_count": len(requeued), "requeued": requeued}), 200
 
 
+@app.route("/api/revert_mistaken_requeue", methods=["POST"])
+@rate_limit(10, 60)
+def revert_mistaken_requeue():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    items = data.get("items", [])
+    return jsonify(db.revert_mistaken_requeue(items)), 200
+
+
 @app.route("/api/ai_error_detail", methods=["GET"])
 @rate_limit(30, 60)
 def ai_error_detail():
