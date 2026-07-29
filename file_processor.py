@@ -148,7 +148,7 @@ def _extract_text_from_documents(documents: list[tuple[str, bytes]]) -> tuple[st
 # Claude API calls
 # ---------------------------------------------------------------------------
 
-def _call_claude(prompt: str, images_b64: list[str] = None) -> str:
+def _call_claude(prompt: str, images_b64: list[str] = None, step: str = "?", tender_id=None) -> str:
     content = []
     for img in (images_b64 or []):
         content.append({
@@ -160,6 +160,13 @@ def _call_claude(prompt: str, images_b64: list[str] = None) -> str:
         model=ANTHROPIC_MODEL,
         max_tokens=8192,
         messages=[{"role": "user", "content": content}],
+    )
+    usage = msg.usage
+    log.info(
+        f"{step} tokens for tender {tender_id}: "
+        f"input={usage.input_tokens}, output={usage.output_tokens}, "
+        f"cache_read={getattr(usage, 'cache_read_input_tokens', 0)}, "
+        f"cache_write={getattr(usage, 'cache_creation_input_tokens', 0)}"
     )
     return "".join(b.text for b in msg.content if b.type == "text")
 
@@ -225,7 +232,7 @@ def _step1_extract(text: str, images: list[str], tender_id: int) -> dict | None:
     def attempt():
         log.info(f"Step1 input for tender {tender_id}: doc_text_length={len(text)}, first_300_chars={text[:300]!r}")
         try:
-            raw = _call_claude(prompt, images_b64=images if not text else None)
+            raw = _call_claude(prompt, images_b64=images if not text else None, step="Step1", tender_id=tender_id)
         except Exception as e:
             log.error(f"Step1 API call failed: {type(e).__name__}: {str(e)}")
             if hasattr(e, "status_code"):
@@ -296,7 +303,7 @@ _MATCH_PROMPT = """\
 """
 
 
-def _step2_match(positions: list[dict], price_items: list[dict]) -> list[dict] | None:
+def _step2_match(positions: list[dict], price_items: list[dict], tender_id=None) -> list[dict] | None:
     price_list_text = json.dumps(
         [{"id": p["id"], "name": p["name"], "unit": p["unit"], "category": p["category"]}
          for p in price_items],
@@ -314,7 +321,7 @@ def _step2_match(positions: list[dict], price_items: list[dict]) -> list[dict] |
 
     def attempt():
         try:
-            raw = _call_claude(prompt)
+            raw = _call_claude(prompt, step="Step2", tender_id=tender_id)
         except Exception as e:
             log.error(f"Step2 API call failed: {type(e).__name__}: {str(e)}")
             return None
@@ -488,7 +495,7 @@ def _step4_comment(tender_id: int, tender: dict, scores: dict) -> str:
         history=json.dumps(history, ensure_ascii=False),
     )
     try:
-        return _call_claude(prompt)
+        return _call_claude(prompt, step="Step4", tender_id=tender_id)
     except Exception as e:
         log.error(f"Step4 comment failed for tender {tender_id}: {e}")
         return "Комментарий недоступен"
@@ -560,7 +567,7 @@ def _analyze_tender_impl(tender_id: int, documents: list[tuple[str, bytes]]):
 
     # Step 2 — match against price list
     active_items = db.get_active_price_items()
-    matches = _step2_match(positions, active_items)
+    matches = _step2_match(positions, active_items, tender_id=tender_id)
     if matches is None:
         log.error(f"Step2 matching failed for tender {tender_id}")
         db.reject_tender(tender_id, "ai_error")

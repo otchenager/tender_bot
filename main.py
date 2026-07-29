@@ -181,6 +181,16 @@ def mark_fetch_failed():
 # check (dashboard button) that a fast poll job picks up separately.
 # ---------------------------------------------------------------------------
 
+@app.route("/api/monitor_stats", methods=["GET"])
+@rate_limit(30, 60)
+def monitor_stats():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    return jsonify(db.get_monitor_stats()), 200
+
+
 @app.route("/api/tenders_to_revalidate", methods=["GET"])
 @rate_limit(60, 60)
 def tenders_to_revalidate():

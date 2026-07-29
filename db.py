@@ -744,6 +744,50 @@ def recompute_all_raw_BR(settings: dict) -> dict:
     return stats
 
 
+def get_monitor_stats() -> dict:
+    """Read-only snapshot for periodic pipeline-health checks (Goal 1
+    stability monitoring): queue depth, fetch-failure breakdown, and the
+    last hour's outcome mix. No writes, safe to poll frequently."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+
+        cur.execute("""
+            SELECT COUNT(*) AS n
+            FROM tenders_raw r
+            WHERE r.status = 'passed'
+              AND NOT EXISTS (
+                  SELECT 1 FROM tenders t
+                  WHERE t.external_id = r.external_id AND t.source = r.source
+              )
+        """)
+        pending_queue = cur.fetchone()["n"]
+
+        cur.execute("""
+            SELECT reject_reason, COUNT(*) AS n
+            FROM tenders_raw
+            WHERE status = 'fetch_failed'
+            GROUP BY reject_reason
+            ORDER BY n DESC
+        """)
+        fetch_failed = {row["reject_reason"]: row["n"] for row in cur.fetchall()}
+
+        cur.execute("""
+            SELECT status, reject_reason, COUNT(*) AS n
+            FROM tenders
+            WHERE updated_at > NOW() - INTERVAL '1 hour'
+            GROUP BY status, reject_reason
+            ORDER BY n DESC
+        """)
+        last_hour = [dict(row) for row in cur.fetchall()]
+
+        return {
+            "pending_queue": pending_queue,
+            "fetch_failed_total": sum(fetch_failed.values()),
+            "fetch_failed_by_reason": fetch_failed,
+            "last_hour_outcomes": last_hour,
+        }
+
+
 def get_pending_document_fetches(source: str) -> list[dict]:
     """Raw tenders that passed B/R but have no matching row yet in `tenders`
     (i.e. documents were never fetched/analyzed) — polled by the VPS."""
