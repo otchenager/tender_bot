@@ -17,6 +17,7 @@ import json
 import os
 import random
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,11 +118,33 @@ def _save_checkpoint(data: dict):
 # Document downloader
 # ---------------------------------------------------------------------------
 
+# Construction tenders occasionally carry huge scanned drawing packages —
+# fully buffering one into memory, then base64-encoding it (+33% size) and
+# JSON-serializing the whole payload for the ingest_tender POST, can single-
+# handedly spike RSS by several hundred MB on this box's 956MB/no-swap
+# ceiling. Streamed with a hard byte cap (checked against Content-Length up
+# front, and against actual bytes read as they arrive, since a server can
+# omit or lie about Content-Length) rather than trusting a single blind
+# `resp.content` read.
+MAX_DOCUMENT_BYTES = 20 * 1024 * 1024  # 20 MB per file
+
+
+class DocumentTooLarge(Exception):
+    def __init__(self, name: str, size_bytes: int):
+        self.name = name
+        self.size_bytes = size_bytes
+        super().__init__(f"{name}: {size_bytes / 1024 / 1024:.1f} MB")
+
+
 def _download_documents(doc_entries: list) -> list[tuple[str, bytes]]:
     """Entries are either plain URL strings (icetrade) or {url, filename}
     dicts (goszakupki get-file links, whose URLs carry no extension — the
     filename comes from the link text). The AI pipeline picks its parser by
-    filename extension, so a real name matters."""
+    filename extension, so a real name matters.
+
+    Raises DocumentTooLarge (instead of skipping) so the caller can abandon
+    the whole tender and mark it visibly rather than silently sending a
+    partial/incomplete document set."""
     results = []
     for entry in doc_entries:
         if isinstance(entry, dict):
@@ -130,11 +153,26 @@ def _download_documents(doc_entries: list) -> list[tuple[str, bytes]]:
             url, filename = entry, None
         if not url:
             continue
+        resp = None
         try:
-            resp = requests.get(url, headers=_DOWNLOAD_HEADERS, timeout=60, verify=False)
+            resp = requests.get(url, headers=_DOWNLOAD_HEADERS, timeout=60, verify=False, stream=True)
             if resp.status_code != 200:
                 log.warning(f"Download failed {url}: HTTP {resp.status_code}")
                 continue
+
+            content_length = resp.headers.get("Content-Length")
+            if content_length and int(content_length) > MAX_DOCUMENT_BYTES:
+                raise DocumentTooLarge(filename or url, int(content_length))
+
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=262144):
+                total += len(chunk)
+                if total > MAX_DOCUMENT_BYTES:
+                    raise DocumentTooLarge(filename or url, total)
+                chunks.append(chunk)
+            file_bytes = b"".join(chunks)
+
             if not filename:
                 cd = resp.headers.get("Content-Disposition", "")
                 m = re.search(r"filename\*?=\"?([^\";]+)", cd)
@@ -142,9 +180,14 @@ def _download_documents(doc_entries: list) -> list[tuple[str, bytes]]:
                     filename = m.group(1).split("''")[-1].strip()
             if not filename:
                 filename = url.rsplit("/", 1)[-1].split("?")[0] or "document"
-            results.append((filename, resp.content))
+            results.append((filename, file_bytes))
+        except DocumentTooLarge:
+            raise
         except Exception as e:
             log.error(f"Download error {url}: {e}")
+        finally:
+            if resp is not None:
+                resp.close()
     return results
 
 
@@ -230,6 +273,30 @@ def _send_tender(tender: dict, documents: list[tuple[str, bytes]]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Fetch-failure reporter — tells Railway a pending tender is being abandoned
+# (oversized document or per-tender deadline exceeded) so it moves out of
+# tenders_raw status='passed' (stops being retried every round forever) and
+# shows up as a distinct, visible rejection in the funnel/UI instead of just
+# quietly never completing.
+# ---------------------------------------------------------------------------
+
+def _mark_fetch_failed(external_id: str, source: str, reason: str) -> bool:
+    payload = {"external_id": external_id, "source": source, "reason": reason}
+    headers = {"X-API-Key": INGEST_API_KEY, "Content-Type": "application/json"}
+    try:
+        resp = requests.post(
+            f"{RAILWAY_URL}/api/mark_fetch_failed",
+            json=payload, headers=headers, timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            return True
+        log.warning(f"mark_fetch_failed HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        log.error(f"mark_fetch_failed error for {external_id}: {e}")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Pending document fetches — Railway tells us, via tenders_raw, which raw
 # tenders passed live B/R and still need documents fetched + the full
 # ingest_tender pipeline. Reuses the existing document downloader and
@@ -251,6 +318,64 @@ def _send_tender(tender: dict, documents: list[tuple[str, bytes]]) -> bool:
 # ---------------------------------------------------------------------------
 
 PENDING_FETCH_CAP = 15
+
+# requests' own timeout= only bounds a single socket call (connect, or the
+# gap between chunks of one read) — it does NOT bound the total wall-clock
+# time of a multi-request sequence (card fetch, then N document downloads,
+# then the ingest POST). A server that keeps trickling bytes just fast
+# enough to never trip any one read's timeout can still wedge this
+# single-threaded loop indefinitely (observed: one tender stuck 4+ hours
+# with zero forward progress after the OOM/fragmentation fix). Running each
+# tender's whole fetch-and-send step in its own thread and bounding it with
+# join(timeout=...) gives a real, unconditional deadline: if it overruns,
+# the main loop abandons and moves on rather than blocking forever. The
+# thread itself is left running (daemon=True — dies with the process); its
+# eventual result, if any, is simply discarded.
+PENDING_ITEM_DEADLINE_SECONDS = 90
+
+
+def _process_one_pending(source_name: str, session, row: dict, result: dict):
+    """Runs in its own thread (see _fetch_and_send_pending_documents) so a
+    hang anywhere in this sequence can be bounded by a join timeout instead
+    of blocking the caller. Writes its outcome into `result` — read by the
+    caller only if the thread actually finished within the deadline."""
+    ext_id = row["external_id"]
+    url = row.get("url")
+    if not url:
+        result["status"] = "skip"
+        return
+
+    try:
+        if source_name == "goszakupki":
+            card = scraper_goszakupki._parse_card(session, url)
+            if card == "STOP":
+                result["status"] = "stop"
+                return
+            doc_urls = card.get("documents", []) if isinstance(card, dict) else []
+        else:
+            numeric_id = ext_id.split("_", 1)[-1]
+            card = scraper_icetrade._parse_card(numeric_id)
+            doc_urls = card.get("documents", []) if card else []
+    except Exception as e:
+        log.error(f"pending doc card fetch error {ext_id}: {e}")
+        result["status"] = "error"
+        return
+
+    try:
+        documents = _download_documents(doc_urls)
+    except DocumentTooLarge as e:
+        log.warning(
+            f"{source_name}: {ext_id} — document too large "
+            f"({e.name}: {e.size_bytes / 1024 / 1024:.1f} MB > "
+            f"{MAX_DOCUMENT_BYTES / 1024 / 1024:.0f} MB cap) — abandoning, marking fetch_failed_oversized"
+        )
+        _mark_fetch_failed(ext_id, source_name, "fetch_failed_oversized")
+        result["status"] = "oversized"
+        return
+
+    ok = _send_tender(row, documents)
+    log.info(f"  → pending doc {'sent' if ok else 'FAILED to send'}: {ext_id}")
+    result["status"] = "ok" if ok else "failed"
 
 
 def _fetch_and_send_pending_documents():
@@ -300,24 +425,27 @@ def _fetch_and_send_pending_documents():
             # previously had none, firing every card fetch back-to-back.
             scraper_module._sleep()
 
-            try:
-                if source_name == "goszakupki":
-                    card = scraper_goszakupki._parse_card(session, url)
-                    if card == "STOP":
-                        log.warning(f"{source_name}: STOP mid pending-fetch (CAPTCHA/403), abandoning rest of backlog this round")
-                        break
-                    doc_urls = card.get("documents", []) if isinstance(card, dict) else []
-                else:
-                    numeric_id = ext_id.split("_", 1)[-1]
-                    card = scraper_icetrade._parse_card(numeric_id)
-                    doc_urls = card.get("documents", []) if card else []
-            except Exception as e:
-                log.error(f"pending doc card fetch error {ext_id}: {e}")
+            result: dict = {}
+            worker = threading.Thread(
+                target=_process_one_pending,
+                args=(source_name, session, row, result),
+                daemon=True,
+            )
+            worker.start()
+            worker.join(timeout=PENDING_ITEM_DEADLINE_SECONDS)
+
+            if worker.is_alive():
+                log.error(
+                    f"{source_name}: {ext_id} exceeded {PENDING_ITEM_DEADLINE_SECONDS}s "
+                    f"deadline — abandoning (thread left running in background), "
+                    f"marking fetch_timeout"
+                )
+                _mark_fetch_failed(ext_id, source_name, "fetch_timeout")
                 continue
 
-            documents = _download_documents(doc_urls)
-            ok = _send_tender(row, documents)
-            log.info(f"  → pending doc {'sent' if ok else 'FAILED to send'}: {ext_id}")
+            if result.get("status") == "stop":
+                log.warning(f"{source_name}: STOP mid pending-fetch (CAPTCHA/403), abandoning rest of backlog this round")
+                break
             # documents/card go out of scope here, before the next iteration
             # starts downloading the next tender's files.
 

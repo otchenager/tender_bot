@@ -152,6 +152,29 @@ def pending_documents():
 
 
 # ---------------------------------------------------------------------------
+# Fetch-failure reporter — VPS calls this when it gives up on a pending
+# tender (oversized document past its size cap, or the per-tender fetch
+# deadline exceeded) so it stops being offered by /api/pending_documents
+# forever and shows up as a distinct, visible rejection instead.
+# ---------------------------------------------------------------------------
+
+@app.route("/api/mark_fetch_failed", methods=["POST"])
+@rate_limit(60, 60)
+def mark_fetch_failed():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    for field in ("external_id", "source", "reason"):
+        if not data.get(field):
+            return jsonify({"error": f"missing field: {field}"}), 400
+
+    db.mark_raw_fetch_failed(data["external_id"], data["source"], data["reason"])
+    return jsonify({"status": "ok"}), 200
+
+
+# ---------------------------------------------------------------------------
 # Tender freshness revalidation — a tender's active/closed status on the
 # source site can change after ingest. The VPS runs a shared revalidation
 # batch on two triggers: a daily scheduled job, and an on-demand manual

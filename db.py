@@ -685,6 +685,19 @@ def update_raw_status(raw_id: int, status: str, reject_reason: str | None = None
         """, (status, reject_reason, raw_id))
 
 
+def mark_raw_fetch_failed(external_id: str, source: str, reason: str):
+    """VPS gives up on a pending tender (oversized document or its per-tender
+    fetch deadline expired) — move it out of status='passed' so it stops
+    being retried every round forever, and record why so it's a visible,
+    filterable rejection in the funnel/UI instead of silently vanishing."""
+    with _conn() as conn:
+        conn.cursor().execute("""
+            UPDATE tenders_raw
+            SET status = 'fetch_failed', reject_reason = %s, updated_at = NOW()
+            WHERE external_id = %s AND source = %s
+        """, (reason, external_id, source))
+
+
 def classify_raw_budget_region(row: dict, settings: dict) -> tuple[str, str | None]:
     """B/R against CURRENT search_settings — shared by /api/ingest_raw (one
     row, right after scraping) and recompute_all_raw_BR (every row, right
@@ -807,7 +820,7 @@ def get_all_tenders_combined() -> list[dict]:
             return "suitable"
         if status == "archived":
             return "archived"
-        if status in ("rejected", "filtered_out"):
+        if status in ("rejected", "filtered_out", "fetch_failed"):
             return "rejected"
         return status
 
