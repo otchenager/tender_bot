@@ -875,7 +875,7 @@ def revert_mistaken_requeue(items: list[dict]) -> dict:
     tenders_raw status='fetch_failed'/'requeue_scope_error' so the VPS
     stops offering it. Anything already re-fetched is left alone and
     reported separately — it's already back in the normal pipeline."""
-    reverted, already_reprocessed = [], []
+    reverted, already_reprocessed, not_found = [], [], []
     with _conn() as conn:
         cur = _dict_cursor(conn)
         for item in items:
@@ -892,8 +892,11 @@ def revert_mistaken_requeue(items: list[dict]) -> dict:
                 SET status = 'fetch_failed', reject_reason = 'requeue_scope_error', updated_at = NOW()
                 WHERE external_id = %s AND source = %s
             """, (ext_id, source))
-            reverted.append(ext_id)
-    return {"reverted": reverted, "already_reprocessed": already_reprocessed}
+            if cur.rowcount > 0:
+                reverted.append(ext_id)
+            else:
+                not_found.append({"external_id": ext_id, "source": source})
+    return {"reverted": reverted, "already_reprocessed": already_reprocessed, "not_found": not_found}
 
 
 def get_monitor_stats() -> dict:
