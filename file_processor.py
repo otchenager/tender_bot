@@ -148,7 +148,8 @@ def _extract_text_from_documents(documents: list[tuple[str, bytes]]) -> tuple[st
 # Claude API calls
 # ---------------------------------------------------------------------------
 
-def _call_claude(prompt: str, images_b64: list[str] = None, step: str = "?", tender_id=None) -> str:
+def _call_claude(prompt: str, images_b64: list[str] = None, step: str = "?", tender_id=None,
+                  max_tokens: int = 8192) -> str:
     content = []
     for img in (images_b64 or []):
         content.append({
@@ -158,7 +159,7 @@ def _call_claude(prompt: str, images_b64: list[str] = None, step: str = "?", ten
     content.append({"type": "text", "text": prompt})
     msg = _client.messages.create(
         model=ANTHROPIC_MODEL,
-        max_tokens=8192,
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": content}],
     )
     usage = msg.usage
@@ -238,7 +239,8 @@ def _step1_extract(text: str, images: list[str], tender_id: int) -> dict | None:
     def attempt():
         log.info(f"Step1 input for tender {tender_id}: doc_text_length={len(text)}, first_300_chars={text[:300]!r}")
         try:
-            raw = _call_claude(prompt, images_b64=images if not text else None, step="Step1", tender_id=tender_id)
+            raw = _call_claude(prompt, images_b64=images if not text else None, step="Step1",
+                                tender_id=tender_id, max_tokens=32000)
         except Exception as e:
             log.error(f"Step1 API call failed: {type(e).__name__}: {str(e)}")
             if hasattr(e, "status_code"):
