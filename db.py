@@ -936,6 +936,37 @@ def get_tender_status_by_external_id(external_id: str, source: str) -> dict | No
         return result
 
 
+def get_raw_token_usage(limit: int = 50) -> list[dict]:
+    """Raw rows, no aggregation - for eyeballing real cost-analysis data
+    directly rather than trusting a pre-computed average."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("""
+            SELECT tender_id, step, input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens, created_at
+            FROM token_usage
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_raw_tenders_by_id(ids: list[int]) -> list[dict]:
+    """Raw tender outcome rows for a specific set of ids (paired with
+    get_raw_token_usage's tender_ids) - no aggregation."""
+    if not ids:
+        return []
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("""
+            SELECT id, external_id, status, reject_reason,
+                   k_score, l_score, m_score, s_score
+            FROM tenders
+            WHERE id = ANY(%s)
+        """, (ids,))
+        return [dict(row) for row in cur.fetchall()]
+
+
 def get_monitor_stats() -> dict:
     """Read-only snapshot for periodic pipeline-health checks (Goal 1
     stability monitoring): queue depth, fetch-failure breakdown, and the

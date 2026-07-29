@@ -191,6 +191,32 @@ def monitor_stats():
     return jsonify(db.get_monitor_stats()), 200
 
 
+@app.route("/api/raw_token_usage", methods=["GET"])
+@rate_limit(30, 60)
+def raw_token_usage():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    limit = request.args.get("limit", default=50, type=int)
+    return jsonify(db.get_raw_token_usage(limit=limit)), 200
+
+
+@app.route("/api/raw_tenders", methods=["GET"])
+@rate_limit(30, 60)
+def raw_tenders():
+    supplied = request.headers.get("X-API-Key", "")
+    if not INGEST_API_KEY or not hmac.compare_digest(supplied, INGEST_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+    ids_param = request.args.get("ids", "")
+    try:
+        ids = [int(x) for x in ids_param.split(",") if x.strip()]
+    except ValueError:
+        return jsonify({"error": "ids must be a comma-separated list of integers"}), 400
+    return jsonify(db.get_raw_tenders_by_id(ids)), 200
+
+
 @app.route("/api/tender_status", methods=["GET"])
 @rate_limit(30, 60)
 def tender_status():
