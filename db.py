@@ -806,6 +806,35 @@ def get_token_usage_stats(limit: int = 10) -> dict:
         return {"by_step": by_step, "recent_tenders": recent_tenders}
 
 
+def get_recent_ai_errors(limit: int = 10) -> list[dict]:
+    """Diagnostic for the Goal 1 stability checkpoint: which tenders hit
+    ai_error, and what (if any) token_usage rows exist for them — lets us
+    tell an API failure (no Step1 call logged) apart from a parse/schema
+    failure (a call happened, response just didn't parse) without Railway
+    log access."""
+    with _conn() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("""
+            SELECT id, external_id, source, title, url, updated_at
+            FROM tenders
+            WHERE status = 'rejected' AND reject_reason = 'ai_error'
+            ORDER BY updated_at DESC
+            LIMIT %s
+        """, (limit,))
+        errors = [dict(row) for row in cur.fetchall()]
+
+        for err in errors:
+            cur.execute("""
+                SELECT step, input_tokens, output_tokens, created_at
+                FROM token_usage
+                WHERE tender_id = %s
+                ORDER BY created_at
+            """, (err["id"],))
+            err["token_calls"] = [dict(row) for row in cur.fetchall()]
+
+        return errors
+
+
 def get_monitor_stats() -> dict:
     """Read-only snapshot for periodic pipeline-health checks (Goal 1
     stability monitoring): queue depth, fetch-failure breakdown, and the
