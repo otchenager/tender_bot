@@ -157,11 +157,12 @@ def _call_claude(prompt: str, images_b64: list[str] = None, step: str = "?", ten
             "source": {"type": "base64", "media_type": "image/png", "data": img},
         })
     content.append({"type": "text", "text": prompt})
-    msg = _client.messages.create(
+    with _client.messages.stream(
         model=ANTHROPIC_MODEL,
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": content}],
-    )
+    ) as stream:
+        msg = stream.get_final_message()
     usage = msg.usage
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
     cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
