@@ -330,7 +330,7 @@ def _step2_match(positions: list[dict], price_items: list[dict], tender_id=None)
 
     def attempt():
         try:
-            raw = _call_claude(prompt, step="Step2", tender_id=tender_id)
+            raw = _call_claude(prompt, step="Step2", tender_id=tender_id, max_tokens=32000)
         except Exception as e:
             log.error(f"Step2 API call failed: {type(e).__name__}: {str(e)}")
             return None
